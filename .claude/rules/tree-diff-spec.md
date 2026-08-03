@@ -156,6 +156,14 @@ window can't see them:
 | `REVISE` | Fuzzy match ≥ 0.6 — send old source + new source + old translation |
 | `TRANSLATE` | Fresh segment |
 | `RETIRE` | Drop from TM |
+| `COPY` | Opaque block (fence / raw HTML / front matter) changed — carry verbatim into the target, no LLM |
+
+`COPY` exists because "never translated" is not the same as "never emitted". A
+changed code fence has no translation unit, but the target document still has
+to receive the new code — without this the localized copy silently keeps a
+stale command forever. Only the *new* side is walked: assembly rebuilds the
+target from the new tree, so a removed opaque block disappears by construction,
+and since opaque blocks never enter the TM there is nothing to `RETIRE`.
 
 ### Thresholds
 
@@ -163,6 +171,13 @@ window can't see them:
 | --- | --- | --- |
 | `SIM_THRESHOLD` | 0.4 | Below this two nodes are unrelated rather than "one edited into the other". GumTree uses 0.5 for structural similarity; 0.4 is a little more eager, which suits prose |
 | `FUZZY_THRESHOLD` | 0.6 | Below this, a fuzzy match is worse than translating from scratch. Trados / memoQ default their TM cut-off to ~70% for the same reason |
+
+Every `SequenceMatcher` in this codebase must pass `autojunk=False` — use the
+`ratio()` helper rather than calling difflib directly. The default heuristic
+marks any element occurring in more than 1% of a sequence as junk once the
+sequence reaches 200 items; on *character* sequences that is every common
+letter, which both skews similarity on long paragraphs and makes the score
+asymmetric (`ratio(a, b) != ratio(b, a)`).
 
 ## Usage
 

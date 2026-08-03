@@ -22,12 +22,12 @@ There is n working pipeline, our task is to research this operation.
 
 `app/tree_diff.py` is the working implementation: it Merkle-hashes both AST
 revisions, aligns each sibling level with LCS, and emits per-translation-unit
-actions (REUSE / RECHECK / REVISE / TRANSLATE / RETIRE) with heading-trail
-context and the inline placeholders that must survive translation.
+actions (REUSE / RECHECK / REVISE / TRANSLATE / RETIRE, plus COPY for changed
+code fences and other opaque blocks) with heading-trail context and the inline
+placeholders that must survive translation.
 
 ```bash
-venv/bin/python3 app/tree_diff.py            # demo on md/skills/_shared/templates/review-report.md
-venv/bin/python3 app/tree_diff.py a.md b.md
+venv/bin/python3 app/tree_diff.py OLD.md NEW.md
 ```
 
 The reasoning behind it — why tree edit distance is the wrong tool here, why the

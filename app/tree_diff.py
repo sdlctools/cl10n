@@ -161,11 +161,22 @@ class Op:
 SIM_THRESHOLD = 0.4
 
 
+def ratio(a: str, b: str) -> float:
+    """Normalised text similarity in [0, 1].
+
+    `autojunk=False` is not optional here. difflib's default heuristic marks any
+    element occurring in >1% of a sequence as junk once the sequence reaches 200
+    items — on *character* sequences that is every common letter, which both
+    skews the score on long paragraphs and makes it asymmetric.
+    """
+    return SequenceMatcher(None, norm(a), norm(b), autojunk=False).ratio()
+
+
 def similarity(a: SyntaxTreeNode, b: SyntaxTreeNode) -> float:
     if a.type != b.type:
         return 0.0
     if is_unit(a):
-        return SequenceMatcher(None, norm(_unit_source(a)), norm(_unit_source(b))).ratio()
+        return ratio(_unit_source(a), _unit_source(b))
 
     # Structural: Dice coefficient over the sets of descendant hashes.
     ah, bh = _descendant_hashes(a), _descendant_hashes(b)
@@ -176,7 +187,7 @@ def similarity(a: SyntaxTreeNode, b: SyntaxTreeNode) -> float:
     # comparing the flattened prose, which still reads as "the same item".
     if dice >= SIM_THRESHOLD or len(ah) > 24:
         return dice
-    return max(dice, SequenceMatcher(None, _flat_text(a), _flat_text(b)).ratio())
+    return max(dice, ratio(_flat_text(a), _flat_text(b)))
 
 
 _FLAT_CAP = 4000
@@ -302,7 +313,7 @@ def _detect_moves(ops: list[Op]) -> list[Op]:
 
 @dataclass
 class WorkItem:
-    action: str  # TRANSLATE | REVISE | REUSE | RECHECK | RETIRE
+    action: str  # TRANSLATE | REVISE | REUSE | RECHECK | RETIRE | COPY
     unit_hash: str
     node_type: str
     context: str  # heading trail — read-only context for the prompt
@@ -359,6 +370,33 @@ def _units_under(node: SyntaxTreeNode):
         yield from _units_under(c)
 
 
+def _opaque_under(node: SyntaxTreeNode):
+    """Code fences, raw HTML, front matter — never translated, but they still
+    have to be carried into the target document when they change.
+
+    Only the *new* side is ever walked: assembly rebuilds the target from the
+    new tree, so a removed opaque block disappears by construction and needs no
+    op. Nothing here enters the translation memory, so there is nothing to
+    retire either.
+    """
+    if is_unit(node):
+        return
+    if node.type in OPAQUE:
+        yield node
+        return
+    for c in node.children:
+        yield from _opaque_under(c)
+
+
+def _copy_items(node: SyntaxTreeNode) -> list[WorkItem]:
+    """COPY work items for the opaque blocks under a changed subtree."""
+    return [
+        WorkItem("COPY", o.h, o.type, _heading_trail(o),
+                 new_source=own_text(o), node=o)
+        for o in _opaque_under(node)
+    ]
+
+
 def plan(old_md: str, new_md: str) -> list[WorkItem]:
     """Turn two markdown revisions into a translation work list."""
     old_root = SyntaxTreeNode(markdown_to_ast(old_md))
@@ -377,6 +415,7 @@ def plan(old_md: str, new_md: str) -> list[WorkItem]:
             for u in _units_under(op.new):
                 items.append(WorkItem("RECHECK", u.h, u.type, _heading_trail(u),
                                       _unit_source(u)))
+            items.extend(_copy_items(op.new))
         elif op.kind == "UPDATE":
             items.append(WorkItem("REVISE", op.new.h, op.new.type,
                                   _heading_trail(op.new),
@@ -387,6 +426,7 @@ def plan(old_md: str, new_md: str) -> list[WorkItem]:
                 items.append(WorkItem("TRANSLATE", u.h, u.type, _heading_trail(u),
                                       _unit_source(u),
                                       placeholders=_placeholders(u), node=u))
+            items.extend(_copy_items(op.new))
         elif op.kind == "DELETE":
             for u in _units_under(op.old):
                 items.append(WorkItem("RETIRE", u.h, u.type, _heading_trail(u),
@@ -414,7 +454,7 @@ def _fuzzy_pair(items: list[WorkItem]) -> list[WorkItem]:
 
     scored = sorted(
         (
-            (SequenceMatcher(None, norm(g.old_source), norm(f.new_source)).ratio(), gi, fi)
+            (ratio(g.old_source, f.new_source), gi, fi)
             for gi, g in enumerate(gone)
             for fi, f in enumerate(fresh)
             if g.node_type == f.node_type
@@ -463,24 +503,47 @@ SAMPLE = os.path.join(HERE, "..", "md", "skills", "_shared", "templates",
                       "review-report.md")
 
 
-def _mutate(md: str) -> str:
-    """Four realistic edits: append, in-place edit, insert, reflow."""
-    md = md.replace(
-        "- the Jira per-issue comment (3d),",
-        "- the Jira per-issue comment (3d), including the audit trail,",
-    )
-    md = md.replace(
-        "## Template — fill every section",
-        "A worked example follows the template below.\n\n"
-        "## Template — fill every section",
-    )
-    md = md.replace(
-        "Someone following one review across GitHub, Jira, and chat therefore sees\n"
-        "one layout at one level of detail.",
-        "Someone following one review across GitHub, Jira, and chat therefore "
-        "sees one layout at one level of detail.",  # pure reflow, must be a no-op
-    )
-    return md
+# def _mutate(md: str) -> str:
+#     """Four realistic edits: append, in-place edit, insert, reflow."""
+#     md = md.replace(
+#         "- the Jira per-issue comment (3d),",
+#         "- the Jira per-issue comment (3d), including the audit trail,",
+#     )
+#     md = md.replace(
+#         "## Template — fill every section",
+#         "A worked example follows the template below.\n\n"
+#         "## Template — fill every section",
+#     )
+#     md = md.replace(
+#         "Someone following one review across GitHub, Jira, and chat therefore sees\n"
+#         "one layout at one level of detail.",
+#         "Someone following one review across GitHub, Jira, and chat therefore "
+#         "sees one layout at one level of detail.",  # pure reflow, must be a no-op
+#     )
+#     return md
+
+
+WIDTH = 110
+
+
+def _clip(text: str, start: int = 0) -> str:
+    body = norm(text)
+    frag = body[start:start + WIDTH]
+    return ("…" if start else "") + frag + ("…" if start + WIDTH < len(body) else "")
+
+
+def _focus(old: str, new: str) -> tuple[str, str]:
+    """Clip both sides around their *first difference*.
+
+    Plain head-truncation hides the edit whenever it falls past the cut-off,
+    which makes a REVISE line look like it reports two identical strings.
+    """
+    o, n = norm(old), norm(new)
+    lead = 30
+    for tag, i1, _i2, j1, _j2 in SequenceMatcher(None, o, n, autojunk=False).get_opcodes():
+        if tag != "equal":
+            return _clip(o, max(0, i1 - lead)), _clip(n, max(0, j1 - lead))
+    return _clip(o), _clip(n)
 
 
 def main() -> None:
@@ -488,20 +551,19 @@ def main() -> None:
         old_md = open(sys.argv[1], encoding="utf-8").read()
         new_md = open(sys.argv[2], encoding="utf-8").read()
     else:
-        raw = open(SAMPLE, encoding="utf-8").read()
-        old_md = ast_to_markdown(markdown_to_ast(raw))
-        new_md = _mutate(old_md)
-        print(f"demo: {os.path.relpath(SAMPLE)} + 3 synthetic edits\n")
+        sys.exit(f"usage: {os.path.basename(sys.argv[0])} OLD.md NEW.md")
 
     items = plan(old_md, new_md)
 
     counts: dict[str, int] = {}
     for it in items:
         counts[it.action] = counts.get(it.action, 0) + 1
-    total = len(items)
+    copies = counts.get("COPY", 0)
+    total = len(items) - copies
     touched = total - counts.get("REUSE", 0)
     print(f"{total} translation units — {touched} need the LLM "
-          f"({100 * touched / max(total, 1):.1f}%)")
+          f"({100 * touched / max(total, 1):.1f}%)"
+          + (f"; {copies} opaque block(s) to copy verbatim" if copies else ""))
     print("  " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())) + "\n")
 
     for it in items:
@@ -511,10 +573,14 @@ def main() -> None:
               + (f"  sim={it.sim:.2f}" if it.action == "REVISE" else ""))
         if it.context:
             print(f"    ctx : {it.context}")
-        if it.old_source:
-            print(f"    old : {norm(it.old_source)[:110]}")
-        if it.new_source:
-            print(f"    new : {norm(it.new_source)[:110]}")
+        if it.old_source and it.new_source:
+            old_frag, new_frag = _focus(it.old_source, it.new_source)
+            print(f"    old : {old_frag}")
+            print(f"    new : {new_frag}")
+        elif it.old_source:
+            print(f"    old : {_clip(it.old_source)}")
+        elif it.new_source:
+            print(f"    new : {_clip(it.new_source)}")
         if it.placeholders:
             print(f"    keep: {it.placeholders}")
         print()
