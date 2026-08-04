@@ -47,11 +47,8 @@ DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 # Language name mapping for prompts
 LANG_NAMES = {
-    "es": "Spanish",
-    "ja": "Japanese",
     "he": "Hebrew",
-    "cn": "Chinese (Simplified)",
-    "ru": "Russian",
+    "ru": "Russian"
 }
 
 async def translate_text(text: str, target_lang: str) -> str:
@@ -60,7 +57,7 @@ async def translate_text(text: str, target_lang: str) -> str:
     
     Args:
         text: The English text to translate
-        target_lang: Target language code (es, ja, he, cn)
+        target_lang: Target language code (he, ru)
     
     Returns:
         Translated text string
@@ -194,7 +191,7 @@ description: Turn a feature/task/bug description into Jira issues with matching 
         
         translations = await process_single_item(
             example_text,
-            ["es", "ja", "he", "cn"]
+            [ "he", "ru"]
         )
         
         print("\n--- Example Translation Results ---")
