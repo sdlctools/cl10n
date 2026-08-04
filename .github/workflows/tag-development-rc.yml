@@ -1,0 +1,117 @@
+# Tags every push to `development` with an incrementing dev build number —
+# vX.Y.Z-dev.N. X.Y.Z stays pinned to the latest real release tag until
+# cut-release.yml / release.yml ship the next one; N increments on each push
+# and resets to 1 the moment a release bumps X.Y.Z (including the back-merge
+# that release.yml pushes to `development` after a release).
+#
+# Mirrors claude-code-plugins' update_lab.yml -lab.<N> convention (same base
+# version, same incrementing counter, same version-file stamping), applied
+# directly to `development` instead of syncing into a separate `lab` branch.
+#
+# release.yml / cut-release.yml both ignore these tags: their "latest tag"
+# resolution requires an exact vX.Y.Z match (or excludes any tag containing
+# '-'), so dev builds never interfere with an actual release cut.
+#
+# Auth: the default GITHUB_TOKEN works while `development` is unprotected
+# (matches the same caveat in release.yml). If branch protection is later
+# enabled, swap in a PAT with bypass, same as release.yml would need.
+name: Tag development with dev build
+
+on:
+  push:
+    branches:
+      - development
+
+permissions:
+  contents: write
+
+# Serialize runs so the sequential -dev.<N> suffix can't collide when two
+# pushes land close together.
+concurrency:
+  group: tag-development-dev
+  cancel-in-progress: false
+
+jobs:
+  tag-dev:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          ref: development
+          fetch-depth: 0 # full history + tags for version math
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Skip if HEAD is already a dev build
+        id: guard
+        run: |
+          set -euo pipefail
+          if git describe --exact-match --match 'v*-dev.*' HEAD >/dev/null 2>&1; then
+            echo "HEAD is already tagged as a dev build — nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute the dev version
+        id: version
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+
+          # Base = latest PLAIN SemVer release tag (vX.Y.Z, no '-' suffix).
+          # Stays pinned to the last real release until cut-release.yml /
+          # release.yml ship the next one — mirrors update_lab.yml exactly.
+          BASE_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -vE '-' | sort -V | tail -n1 || true)"
+          BASE="${BASE_TAG#v}"; BASE="${BASE:-0.0.0}"
+
+          # N = highest existing v<base>-dev.<N> + 1 — resets to 1 whenever a
+          # release bumps BASE.
+          LAST_N="$(git tag -l "v${BASE}-dev.*" | sed -E 's/.*-dev\.//' | sort -n | tail -n1 || true)"
+          N=$(( ${LAST_N:-0} + 1 ))
+          DEV_VERSION="${BASE}-dev.${N}"
+
+          echo "dev_version=${DEV_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "base_tag=${BASE_TAG:-<none — pre-first-release>}" >> "$GITHUB_OUTPUT"
+          echo "Dev build: v${DEV_VERSION} (base ${BASE_TAG:-<none — pre-first-release>}, counter ${N})"
+
+      - name: Stamp pyproject.toml, commit, tag, push
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          DEV_VERSION: ${{ steps.version.outputs.dev_version }}
+        run: |
+          set -euo pipefail
+          TAG="v${DEV_VERSION}"
+
+          # Stamp pyproject.toml so a checkout of this tag reports the right
+          # version (mirrors release.yml's real-release stamping step).
+          sed -i -E 's/^version = ".*"$/version = "'"${DEV_VERSION}"'"/' pyproject.toml
+          grep -q "version = \"${DEV_VERSION}\"" pyproject.toml
+          git add pyproject.toml
+
+          # [skip ci] — this push lands back on `development`, the branch
+          # that triggers this very workflow; without it, every dev build
+          # would re-trigger itself.
+          git commit -m "chore(dev): ${DEV_VERSION} [skip ci]"
+
+          git push origin development
+          git tag -a "${TAG}" -m "Dev build ${DEV_VERSION}"
+          git push origin "${TAG}"
+
+      - name: Job summary
+        if: steps.guard.outputs.skip == 'false'
+        env:
+          DEV_VERSION: ${{ steps.version.outputs.dev_version }}
+          BASE_TAG: ${{ steps.version.outputs.base_tag }}
+        run: |
+          {
+            echo "## Dev build v${DEV_VERSION}"
+            echo ""
+            echo "- base   : ${BASE_TAG} (unchanged until the next real release)"
+            echo "- tag    : v${DEV_VERSION}"
+            echo "- pushed : \`development\` (version-stamp commit) + tag \`v${DEV_VERSION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
