@@ -16,8 +16,11 @@ There is n working pipeline, our task is to research this operation.
 * md - source markdown files (mostly taken from other projects)
 * app - working examples, this where you put new files
 * cl10n/ - the continuous-localization runtime (queue runner, state store,
-  its tests). New pipeline components go here, not in app/, so the runtime
-  stays reviewable on its own.
+  reassembly/render, its tests). New pipeline components go here, not in app/,
+  so the runtime stays reviewable on its own.
+* locales/ - rendered translations, `locales/<lang>/` mirroring `md/` (committed)
+* l10n/ - pipeline state: `tm/<lang>.json` and `manifest.json` committed,
+  `queue/` gitignored
 * .claude/rules/ - design specs, auto-loaded when their `paths:` are touched
 
 
@@ -81,6 +84,35 @@ Measured on the real corpus (30 units, `he`, free-tier account at 8000 TPM):
 232s serially vs 156s at `-c 8`, and the shared rate-limit gate took the run
 from 4 jobs lost to throttling down to 0.
 
+## cl10n/ — reassembly and rendering (steps 10-11)
+
+`cl10n/reassemble.py` turns a source document plus the translation memory into
+`locales/<lang>/<mirrored path>`. It canonicalises the source, parses it once,
+and replaces **only** each translation unit's `inline` content — so heading
+levels, list nesting, table shape and code fences come from the source tree and
+cannot be corrupted by a translation. A unit with no usable entry renders as
+English (no entry, an empty translation, or one that lost a placeholder), and
+every one of those is counted in the report rather than shipped silently. Each
+render re-parses its own output and refuses to write a file whose block
+structure moved.
+
+```bash
+venv/bin/python3 cl10n/reassemble.py --langs he,ru                    # md/**/*.md → locales/
+venv/bin/python3 cl10n/reassemble.py --langs he md/skills/x/SKILL.md
+venv/bin/python3 cl10n/reassemble.py --langs he,ru --dry-run --report l10n/render.json
+```
+
+`cl10n/placeholders.py` holds the placeholder-integrity rule, enforced both by
+the runner (before a TM write) and here (before a splice).
+`cl10n/pseudo_tm.py` is **dev scaffolding**: it writes a pseudolocalized TM so
+the whole corpus can be rendered in `he` and `ru` without an API key — point it
+at a scratch directory, never at a real `l10n/tm/`.
+
+The design — why the splice is the only mutation, why the fallback is the
+*absence* of one, the render-time placeholder gate, the table-cell newline
+hazard and why RTL needed no special handling — is in
+[`.claude/rules/cl10n-reassembly-spec.md`](.claude/rules/cl10n-reassembly-spec.md).
+
 ## tests
 
 ```bash
@@ -89,10 +121,12 @@ venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
 ```
 
 Provider access is stubbed throughout — no test needs an API key, and none
-makes a network call.
+makes a network call. The reassembly tests run against the real `md/` corpus
+with a pseudolocalized memory, so they cover both target languages end to end.
 
-Not built yet: reassembly (splicing translated `inline` content back into the
-tree and rendering through `ast_to_markdown`).
+Not built yet: the orchestrator — the real enqueue step (manifest +
+`git show <blob>` recovery of the previous revision), RETIRE garbage
+collection, and writing `l10n/manifest.json`.
 
 ## python libs in use
 W're dealing with complex markdown structires (gfm compatible) and  hardly rely on mdformat, merkdown-it-py packages, and their plugins.. See how to process markdown to ast and vice versa.

@@ -22,7 +22,12 @@ the two disagree, the spec wins and this file is the bug.
 | `cl10n/queue_runner.py` | The runner. Reads a queue file, drives every job to a terminal state, writes the translation memory. |
 | `cl10n/l10n_store.py` | Persistence primitives: atomic writes, the queue file, the per-language TM. No provider, no asyncio. |
 | `cl10n/build_queue.py` | **Dev scaffolding**, not a pipeline component — see "What this is not". |
-| `cl10n/tests/` | 60 tests. Provider stubbed throughout; none needs an API key or touches the network. |
+| `cl10n/placeholders.py` | The placeholder-integrity rule (§6), shared with reassembly so the two enforcement points cannot drift. |
+| `cl10n/tests/` | Provider stubbed throughout; none needs an API key or touches the network. |
+
+Reassembly and rendering — the step that consumes this runner's output — is
+`cl10n/reassemble.py`, specified in
+[`cl10n-reassembly-spec.md`](cl10n-reassembly-spec.md).
 
 Everything the runner reads and writes is defined by `app/schemas/*.schema.json`.
 Those schemas are the contract; a state file that fails validation is a bug in
@@ -188,6 +193,12 @@ as many times** as in the source, verbatim. "At least" rather than "exactly"
 because a target language may legitimately repeat a term the source states
 once; losing one is what this catches.
 
+The rule itself lives in `cl10n/placeholders.py`, not here: `reassemble` runs
+the identical check against every TM entry it is about to splice, because the
+memory is a committed, hand-editable file and the renderer is the last thing
+between a broken command and a published document. `placeholder_gate` below is
+only this runner's retryable-`Failure` shape wrapped around that rule.
+
 A failure is retryable: the next attempt appends a corrective instruction
 naming the lost placeholders. Exhausting attempts leaves the job `rejected`,
 nothing enters the TM, and the renderer falls back to the English source — a
@@ -245,9 +256,9 @@ That belongs to its own sub-task — do not grow this file into it.
 
 **Reassembly and rendering are not here.** Splicing translated `inline` content
 back into the new tree and rendering through `app/utils.py`'s `ast_to_markdown`
-is a separate sub-task. The runner's output — the TM plus a queue whose
-`rejected` jobs name the units needing English fallback — is that sub-task's
-input.
+is `cl10n/reassemble.py`, a separate component with its own spec. The runner's
+output — the TM plus a queue whose `rejected` jobs name the units needing
+English fallback — is that component's input.
 
 **The manifest is not written here.** Per-document bookkeeping, `RETIRE`
 garbage collection and the `fallbacks` list belong to the orchestrator.
