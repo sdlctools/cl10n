@@ -1,0 +1,80 @@
+name: Transition Jira Issue on PR Merge
+
+on:
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  transition-jira:
+    # Only allocate a runner for merged issue branches. A merged release/*
+    # PR into main (or any other non-issue head branch) carries no Jira key,
+    # so gating here skips the job entirely instead of spinning one up just
+    # to `exit 0`. Mirrors the job-level guard in
+    # jira_issue_transition_on_branch.yml. head_ref is set on pull_request
+    # events and equals github.event.pull_request.head.ref used below.
+    if: >-
+      github.event.pull_request.merged == true &&
+      (startsWith(github.head_ref, 'feature/') || startsWith(github.head_ref, 'hotfix/'))
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract Jira issue key
+        id: jira
+        shell: bash
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          if [[ "$BRANCH" =~ ^(feature|hotfix)/([A-Z]+-[0-9]+)- ]]; then
+            echo "key=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No Jira issue found in branch '$BRANCH'. Skipping."
+            exit 0
+          fi
+
+      - name: Transition to Done
+        env:
+          JIRA_URL: ${{ secrets.JIRA_ACCOUNT_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_REVIEWER_EMAIL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_REVIEWER_TOKEN }}
+          KEY: ${{ steps.jira.outputs.key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Mirrors STATUS_DONE from .jst/jira-sdlc-tools.env.
+          TARGET="Done"
+
+          # The secret may carry a scheme; the REST host needs a bare host.
+          SITE="${JIRA_URL#*://}"
+
+          # A scoped API token is rejected by Basic auth on the site domain
+          # (*.atlassian.net) — it only works through the api.atlassian.com
+          # gateway, which is addressed by cloud id. Resolve the cloud id from
+          # the site's public tenant_info endpoint so no extra secret is needed.
+          CLOUD_ID=$(curl -fsSL "https://$SITE/_edge/tenant_info" | jq -r '.cloudId')
+          if [ -z "$CLOUD_ID" ] || [ "$CLOUD_ID" = "null" ]; then
+            echo "::error::Could not resolve cloudId from https://$SITE/_edge/tenant_info"
+            exit 1
+          fi
+          BASE="https://api.atlassian.com/ex/jira/$CLOUD_ID/rest/api/3"
+          api() { curl -sSfL -u "$JIRA_EMAIL:$JIRA_TOKEN" -H "Accept: application/json" "$@"; }
+
+          CUR=$(api "$BASE/issue/$KEY?fields=status" | jq -r '.fields.status.name')
+          echo "Issue $KEY is currently '$CUR'."
+          if [ "$CUR" = "$TARGET" ]; then
+            echo "Already $TARGET — skipping."
+            exit 0
+          fi
+
+          # The REST API only accepts a transition id, not a status name, so
+          # resolve it explicitly here.
+          TID=$(api "$BASE/issue/$KEY/transitions" \
+            | jq -r --arg t "$TARGET" 'first(.transitions[] | select(.to.name == $t) | .id) // empty')
+          if [ -z "$TID" ]; then
+            echo "::error::No available transition to '$TARGET' from '$CUR' for $KEY."
+            exit 1
+          fi
+
+          api -X POST -H "Content-Type: application/json" \
+            -d "{\"transition\":{\"id\":\"$TID\"}}" "$BASE/issue/$KEY/transitions"
+          echo "Transitioned $KEY to $TARGET."

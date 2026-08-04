@@ -1,0 +1,490 @@
+# Dispatch twin of `demo-fcc-nvidia-nim-reviewer.yml`.
+#
+# What it demonstrates: the same reviewer-skill-on-Free-Claude-Code + NVIDIA NIM
+# run as that file's, but driven by a manual `workflow_dispatch` instead of an
+# `/fcc-review` PR comment — so the "comment integration" is gone: the
+# issue_comment trigger, the OWNER/MEMBER author gate, the command/prose parser,
+# and the metrics-as-PR-comment step. You dispatch this workflow *from* the
+# feature/hotfix branch whose open PR you want reviewed and pick the NIM model
+# from the dispatch dropdown.
+#
+# What the dispatch buys that the comment trigger couldn't: a model picker.
+# The comment twin is pinned to one model (DEFAULT_REVIEWER_MODEL); this one
+# takes the model as an input, so you can compare reviewers across NIM models
+# without editing the file.
+#
+# ── How the review target is found ──────────────────────────────────────────
+#
+# Under `workflow_dispatch`, `github.ref_name` is the branch selected in the
+# dispatch dropdown — that IS the PR head branch (you dispatch on the feature
+# branch to review its PR). The gating job below resolves the OPEN PR for that
+# branch instead of from a triggering comment; the reviewer skill itself still
+# derives its issue key from the worktree's branch and posts its verdict on the
+# PR as a comment. The skill's behaviour is unchanged; only the workflow's
+# plumbing around it is.
+#
+# ── Reporting ─────────────────────────────────────────────────────────────────
+#
+# No triggering comment means no PR/issue to anchor a comment on, so there is
+# no transcript-comment step and no metrics-as-PR-comment step here. The
+# reviewer skill's verdict still lands on the PR (the skill owns that), and the
+# run's conversation metrics are written to the Actions run summary
+# ($GITHUB_STEP_SUMMARY) instead of a PR comment. The log and the transcript
+# GIF are still uploaded as artifacts.
+#
+# ── Caveats carried over from the comment-triggered twin ─────────────────────
+#
+#  1. The worktree is still rebuilt from a fetched origin/<head> under
+#     $RUNNER_TEMP, even though this is a single job: the reviewer skill
+#     hard-stops unless `.git` is a file (a linked worktree) on a feature/* or
+#     hotfix/* branch, which a bare actions/ checkout is not.
+#  2. **`git config branch.<head>.parentbranch` is machine-local**, so it must
+#     be set on the runner before the skill runs — it is, to the PR base found
+#     by the gating job, ahead of the assigner's durable "PR target branch:"
+#     Jira comment the skill would otherwise fall back to.
+#  3. **Do not export `GH_TOKEN`/`GITHUB_TOKEN` into a step that runs a skill.**
+#     statuscheck reads GITHUB_PAT_TOKEN *out of the env file* and runs
+#     `gh auth login --with-token`, which gh refuses while either token
+#     variable is set in the environment. That is why the token is written into
+#     .jst/jira-sdlc-tools.local.env and the skill-running step's `env:` stops
+#     at the ANTHROPIC_* vars. The gating job uses `GH_TOKEN` in its *own*
+#     step — `env:` is step-scoped, so it cannot bleed into the skill step.
+#  4. **Self-review.** The gh identity here is the runner's built-in token; if
+#     the PR was opened by the same account GitHub would block an approval —
+#     which is why the reviewer skill posts its verdict as a PR *comment*, not
+#     an approval.
+#  5. **The skills come from the marketplace, not from this checkout.** The
+#     reviewer job installs the plugin with `claude plugin marketplace add` +
+#     `claude plugin install`, which clones the plugin repo's *default* branch
+#     — so a skill change is exercised here only once it has landed there, not
+#     from the dispatch branch.
+#
+# ── Secrets ──────────────────────────────────────────────────────────────────
+#
+# All **environment secrets on `production`** (so a job that forgets
+# `environment: production` sees empty strings, not repo-level values), each
+# named exactly as the .jst/jira-sdlc-tools.local.env key it becomes:
+#
+#   NVIDIA_NIM_API_KEY       the model backend credential (only needed at run)
+#   JIRA_ACCOUNT_URL         reviewer role
+#   JIRA_REVIEWER_EMAIL      reviewer role
+#   JIRA_REVIEWER_TOKEN      reviewer role
+#   GITHUB_PAT_TOKEN         populated from the runner's built-in token, not a
+#                            secret to create (see caveat 3)
+
+name: Reviewer Skill — dispatch (FCC + NVIDIA NIM, model-pickable)
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Nvidia-NIM model to use'
+        required: false
+        default: 'nvidia/nemotron-3-ultra-550b-a55b'
+        type: choice
+        options:
+          - "z-ai/glm-5.2"
+          - "nvidia/nemotron-3-ultra-550b-a55b"
+          - "deepseek-ai/deepseek-v4-pro"
+          - "minimaxai/minimax-m3"
+
+env:
+  # Pinned deliberately, same as validator.yml and the comment-triggered twin:
+  # a float would let an upstream CLI change break this demo on an unrelated
+  # day. Bump them together.
+  CLAUDE_CLI_VERSION: 2.1.220
+  # The dispatch input lists NIM models WITHOUT the `nvidia_nim/` provider
+  # prefix that FCC (and `claude --model`) expect; the prefix is prepended here
+  # so the input stays a short, readable choice list. Sync this default's value
+  # with the input's `default:` above.
+  DEFAULT_REVIEWER_MODEL: "nvidia_nim/${{ inputs.model }}"
+
+jobs:
+  # ── Gating job — cheap, secret-free, and runs before the environment gate ───
+  # The comment twin resolves the PR from the triggering `/fcc-review` comment;
+  # this one resolves it from the dispatch branch (github.ref_name). Proceeds
+  # only when there is an OPEN PR on a feature/*|hotfix/* branch, so a dispatch
+  # from the wrong branch — or a branch with no open PR — fails here, before a
+  # human is ever asked to approve a run and before a token is spent.
+  check_branch:
+    runs-on: ubuntu-latest
+    name: Check dispatch branch & open PR
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    if: github.triggering_actor == github.repository_owner
+    outputs:
+      pr_exists: ${{ steps.check_branch.outputs.pr_exists }}
+      pr_number: ${{ steps.check_branch.outputs.pr_number }}
+      head: ${{ steps.check_branch.outputs.head }}
+      base: ${{ steps.check_branch.outputs.base }}
+      issue_key: ${{ steps.check_branch.outputs.issue_key }}
+    steps:
+      - name: Resolve the open PR for the dispatch branch
+        # github.ref_name under workflow_dispatch is the dispatch branch, which
+        # IS the PR head — see the header. This step validates the branch
+        # format, extracts the issue key, and finds the OPEN PR whose base the
+        # reviewer diffs against. A failure here is exactly the cheap,
+        # secret-free gate that runs before the environment-gated reviewer job.
+        id: check_branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD: ${{ github.ref_name }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="$HEAD"
+          # On any failure path the job fails and the dependent reviewer job is
+          # skipped anyway, so these empty outputs are defensive — nothing that
+          # consumes them ever proceeds past a bail.
+          bail() {
+            echo "pr_exists=0" >> "$GITHUB_OUTPUT"
+            echo "pr_number=0" >> "$GITHUB_OUTPUT"
+            echo "head="       >> "$GITHUB_OUTPUT"
+            echo "base="       >> "$GITHUB_OUTPUT"
+            echo "issue_key="  >> "$GITHUB_OUTPUT"
+          }
+
+          if [ -z "$BRANCH_NAME" ]; then
+            echo "::error::workflow_dispatch ran without a branch (github.ref_name empty) — dispatch from a feature/* or hotfix/* branch"
+            bail; exit 1
+          fi
+
+          # Validate branch name format: feature/PROJ-NNN-slug or hotfix/PROJ-NNN-slug.
+          if [[ ! "$BRANCH_NAME" =~ ^(feature|hotfix)/[A-Z][A-Z0-9_]+-[0-9]+- ]]; then
+            echo "::error::dispatch branch '$BRANCH_NAME' does not match required format: feature/PROJ-NNN-slug or hotfix/PROJ-NNN-slug — the reviewer skill derives its issue key from the branch and hard-stops otherwise. Dispatch from the feature/hotfix branch whose PR you want reviewed."
+            bail; exit 1
+          fi
+
+          # Extract issue key from branch name (PROJ-NNN).
+          ISSUE_KEY=$(printf '%s' "$BRANCH_NAME" | sed -nE 's#^(feature|hotfix)/([A-Z][A-Z0-9_]+-[0-9]+)-.*$#\2#p')
+          if [ -z "$ISSUE_KEY" ]; then
+            echo "::error::could not extract issue key from branch name: $BRANCH_NAME"
+            bail; exit 1
+          fi
+
+          # Find the OPEN PR for this head branch — the reviewer reviews a PR.
+          PR_JSON=$(gh pr list --repo "$REPO_NAME" --head "$BRANCH_NAME" --state open --json number,baseRefName)
+          PR_NUMBER=$(printf '%s' "$PR_JSON" | jq -r '.[0].number // empty')
+          BASE=$(printf '%s' "$PR_JSON" | jq -r '.[0].baseRefName // empty')
+          if [ -z "$PR_NUMBER" ] || [ -z "$BASE" ]; then
+            echo "::error::no open PR found for branch '$BRANCH_NAME' — the reviewer reviews an open PR. Open a PR from '$BRANCH_NAME' first, or dispatch from a branch that already has one."
+            bail; exit 1
+          fi
+
+          echo "pr_exists=1"          >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head=$BRANCH_NAME"    >> "$GITHUB_OUTPUT"
+          echo "base=$BASE"           >> "$GITHUB_OUTPUT"
+          echo "issue_key=$ISSUE_KEY"  >> "$GITHUB_OUTPUT"
+          echo "Found open PR #$PR_NUMBER on '$BRANCH_NAME' (base '$BASE') for issue $ISSUE_KEY"
+
+  # ── Reviewer job — the Claude-powered run, on the picked NIM model ──────────
+  reviewer-claude:
+    name: Reviewer skill (Claude)
+    needs: check_branch
+    if: needs.check_branch.outputs.pr_exists == '1'
+    # environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write # the reviewer skill posts its verdict as a PR comment
+
+    steps:
+      - name: Checkout
+        # Full history + every remote ref: the linked worktree is built from a
+        # fetched origin/<head>, and we stand on the PR's base branch, both of
+        # which a shallow single-branch clone doesn't have.
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Write .jst/jira-sdlc-tools.local.env (reviewer role only)
+        shell: bash
+        env:
+          # Each secret is named exactly as the env-file key it becomes, so the
+          # loop below is the whole secret->file mapping (env, not sed).
+          KEYS: JIRA_ACCOUNT_URL JIRA_REVIEWER_EMAIL JIRA_REVIEWER_TOKEN GITHUB_PAT_TOKEN
+          JIRA_ACCOUNT_URL: ${{ secrets.JIRA_ACCOUNT_URL }}
+          JIRA_REVIEWER_EMAIL: ${{ secrets.JIRA_REVIEWER_EMAIL }}
+          JIRA_REVIEWER_TOKEN: ${{ secrets.JIRA_REVIEWER_TOKEN }}
+          GITHUB_PAT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Written in the *main checkout*, before the worktree exists: the
+          # skill's own ensure_local_env.sh copies it into the worktree from
+          # here, which is exactly the path that script exists to cover.
+          missing=()
+          for k in $KEYS; do
+            [ -n "${!k:-}" ] || missing+=("$k")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::missing or empty secret(s) in the 'production' environment: ${missing[*]} — this demo cannot run without them. Add them under Settings → Environments → production → Secrets."
+            exit 1
+          fi
+
+          # Create empty and lock it down BEFORE the secrets go in.
+          : > .jst/jira-sdlc-tools.local.env
+          chmod 600 .jst/jira-sdlc-tools.local.env
+          # printf with the value as an argument: secret values are data, never
+          # re-expanded by the shell and never part of the script text.
+          for k in $KEYS; do
+            printf '%s=%s\n' "$k" "${!k}" >> .jst/jira-sdlc-tools.local.env
+          done
+          # WORKTREES_DIR is deliberately NOT a secret: it's a path on *this*
+          # runner, and a value carried over from a developer's machine would
+          # point somewhere that doesn't exist here.
+          mkdir -p "$RUNNER_TEMP/worktrees"
+          printf 'WORKTREES_DIR=%s\n' "$RUNNER_TEMP/worktrees" >> .jst/jira-sdlc-tools.local.env
+          echo "Wrote $(grep -c . .jst/jira-sdlc-tools.local.env) config lines (values not echoed)."
+
+      - name: Stand on the base branch
+        # The workspace stays a *main checkout* (`.git` is a directory) on the
+        # PR's base branch; the skill itself runs in the linked worktree built
+        # below. Standing on the base (not the head) is what lets that worktree
+        # be created at all — git refuses to check the same branch out twice.
+        # The skills are not read from either checkout: they come from the
+        # marketplace install — see caveat 5 in the header.
+        shell: bash
+        env:
+          BASE: ${{ needs.check_branch.outputs.base }}
+        run: |
+          set -euo pipefail
+          git switch "$BASE"
+          # The reviewer is read-only — it never commits — so unlike
+          # demo-claude-hotfix-flow.yml's committing jobs, no git user identity
+          # is needed here. git switch's DWIM creates a local tracking branch
+          # from origin/<base> when one doesn't exist locally yet.
+
+      - name: Install claude CLI (native, no npm)
+        # Same install as validator.yml and the comment-triggered twin: the
+        # installer SHA256-verifies a prebuilt binary against Anthropic's
+        # manifest and runs its own `claude install`. Pinned deliberately — a
+        # float would let an upstream CLI change break this demo on an
+        # unrelated day. Bump both together.
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash -s -- "$CLAUDE_CLI_VERSION"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install the jira-sdlc plugin from its marketplace
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The skills come from the plugin's marketplace, not from this
+          # checkout — which is what makes this workflow copy-pasteable into a
+          # repo that does not contain the plugin. External consumers: swap the
+          # URL below for your own fork or clone.
+          #
+          # `marketplace add` clones the source repo's DEFAULT branch, so what
+          # runs here is whatever has landed there — not the code on the branch
+          # under test. Land a skill change on the default branch before
+          # expecting a demo run to exercise it.
+          #
+          # Spelled as an https:// URL rather than the `owner/repo` shorthand:
+          # the shorthand tries SSH first and only falls back to HTTPS once that
+          # fails, and a runner has no SSH key for github.com. Same marketplace
+          # name (`jira-sdlc-tools`, from its manifest) either way.
+          claude plugin marketplace add https://github.com/kantorv/jira-sdlc-tools.git
+          claude plugin install jira-sdlc@jira-sdlc-tools
+
+      - name: Install uv
+        # uv installs the FCC server below and uvx runs the GIF renderer later.
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install FCC server only
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv tool install --force --refresh-package free-claude-code \
+            --python 3.14.0 \
+            "free-claude-code @ https://github.com/Alishahryar1/free-claude-code/archive/refs/heads/main.zip"
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+
+      - name: Start fcc-server (background)
+        # MODEL is the dispatch input (prefixed `nvidia_nim/` in
+        # DEFAULT_REVIEWER_MODEL at the top of this file) — so the proxy serves
+        # the model the run was dispatched with.
+        env:
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MODEL: ${{ env.DEFAULT_REVIEWER_MODEL }}
+          ANTHROPIC_AUTH_TOKEN: freecc
+          FCC_OPEN_BROWSER: "0"
+          MESSAGING_PLATFORM: none
+          LOG_LEVEL: INFO
+        run: |
+          fcc-server > /tmp/fcc-server.log 2>&1 &
+          echo $! > /tmp/fcc-server.pid
+          # wait until the proxy answers
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null -H "Authorization: Bearer freecc" \
+                 http://127.0.0.1:8082/v1/models 2>/dev/null \
+               || curl -sf -o /dev/null http://127.0.0.1:8082/admin 2>/dev/null; then
+              echo "fcc-server is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "fcc-server failed to start"
+          cat /tmp/fcc-server.log
+          exit 1
+
+      - name: Rebuild the issue worktree (linked, from the PR head)
+        # The prerequisite the bare checkout can't satisfy: a LINKED worktree
+        # on the PR's head branch, where the skill runs and derives its issue
+        # key. Without this the skill's statuscheck FAILs on the `worktree` row.
+        id: worktree
+        shell: bash
+        env:
+          HEAD: ${{ needs.check_branch.outputs.head }}
+          BASE: ${{ needs.check_branch.outputs.base }}
+          KEY: ${{ needs.check_branch.outputs.issue_key }}
+          PR_NUMBER: ${{ needs.check_branch.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          WT="$RUNNER_TEMP/worktrees/worktree-$KEY"
+          git fetch origin "+refs/heads/$HEAD:refs/remotes/origin/$HEAD"
+          git worktree add --track -B "$HEAD" "$WT" "origin/$HEAD"
+          # parentbranch is machine-local git config, so it never survives into
+          # CI. Re-set it to the PR's real base found by the gating job: the
+          # first source the reviewer's PR-base resolver reads, ahead of the
+          # assigner's durable "PR target branch:" Jira comment.
+          git config "branch.$HEAD.parentbranch" "$BASE"
+          echo "path=$WT" >> "$GITHUB_OUTPUT"
+          echo "### Reviewing \`$KEY\` — PR #$PR_NUMBER \`$HEAD\` → \`$BASE\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run jira-task-reviewer
+        # No key: the reviewer derives the issue from the worktree's branch.
+        # Run in the worktree; the skills come from the marketplace install, so
+        # nothing points back into the checkout.
+        #
+        # --dangerously-skip-permissions: headless runs have no interactive turn
+        # to approve tool calls. Safe-ish here and nowhere else: a throwaway
+        # runner VM, non-root (the flag refuses to run as root).
+        #
+        # The model is the dispatch input, via DEFAULT_REVIEWER_MODEL.
+        timeout-minutes: 60
+        shell: bash
+        working-directory: ${{ steps.worktree.outputs.path }}
+        env:
+          ANTHROPIC_BASE_URL: http://127.0.0.1:8082
+          ANTHROPIC_AUTH_TOKEN: freecc
+          CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: "0"
+        run: |
+          set -euo pipefail
+          claude \
+            --dangerously-skip-permissions \
+            --model "$DEFAULT_REVIEWER_MODEL" \
+            -p "/jira-sdlc:jira-task-reviewer" \
+            2>&1 | tee "$RUNNER_TEMP/reviewer.log"
+
+      - name: Record reviewer run metrics in the run summary
+        # The comment twin posts this as a PR comment; the dispatch variant has
+        # no triggering comment to anchor on, so the metrics (token/turn counts
+        # — how one NIM model's run compares with another's, which is the point
+        # of the model picker) go to the Actions run summary instead. The
+        # reviewer skill still owns the verdict on the PR.
+        #
+        # `if: always()` — a failed run is exactly when the numbers are worth
+        # most — plus `continue-on-error: true`: a missing transcript or an
+        # absent script must never redden a green run. Unlike the comment twin
+        # this step sets no GH_TOKEN at all (it writes no comment), so caveat 3
+        # is satisfied trivially.
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          ROLE: reviewer
+        run: |
+          set -uo pipefail
+          # conversation_metrics.sh emits a markdown metrics table to stdout
+          # and needs only jq + the run's transcript JSONL — no GH_TOKEN, no PR
+          # number — so it works unchanged writing into the run summary.
+          SCRIPT="$GITHUB_WORKSPACE/.github/scripts/conversation_metrics.sh"
+          {
+            printf '### %s — conversation metrics\n\n' "$ROLE"
+            [ -f "$SCRIPT" ] && bash "$SCRIPT" \
+              || printf '_%s is not on this checkout — nothing to measure._\n' "${SCRIPT##*/}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reviewer log
+        # The skill's full transcript — its verdict is echoed here as it posts
+        # to GitHub and Jira, so a human inspecting the run sees the review.
+        # The reviewer skill itself owns the report.md / Jira comment content;
+        # this log is the reliable, path-independent artifact of what happened.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reviewer-log
+          path: ${{ runner.temp }}/reviewer.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Render the reviewer transcript to a GIF
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: bash
+        env:
+          ROLE: reviewer
+        run: |
+          set -uo pipefail
+          # A debug nicety, and it must never redden a green run — hence
+          # `continue-on-error` + a step timeout, and deliberately NO `set -e`,
+          # so each failure path below prints its own reason and the step ends
+          # legibly instead of dying on an opaque non-zero. `if: always()` is
+          # the point rather than a precaution: a *failed* skill run is exactly
+          # the case a terminal replay beats 50k characters of piped stdout.
+          # uv and uvx land in $HOME/.local/bin, which is already on PATH on
+          # ubuntu-latest — prepended explicitly rather than assumed.
+          export PATH="$HOME/.local/bin:$PATH"
+          if ! pip install uv >/dev/null 2>&1; then
+            echo "::warning::$ROLE GIF skipped — pip install uv failed"; exit 1
+          fi
+          if ! uv tool install agent-log-gif >/dev/null 2>&1; then
+            echo "::warning::$ROLE GIF skipped — uv tool install agent-log-gif failed"; exit 1
+          fi
+          OUT="$RUNNER_TEMP/$ROLE-gif"
+          # RENDER_LOG sits outside OUT: the artifact carries GIFs, not logs.
+          RENDER_LOG="$RUNNER_TEMP/$ROLE-render.log"
+          mkdir -p "$OUT"
+          # Glob rather than computing the project slug: claude ran in the
+          # worktree (so its session JSONL lives under ~/.claude/projects), and
+          # this job gets a fresh VM, so there is normally exactly one file. The
+          # zero and the many cases are handled rather than assumed away.
+          shopt -s nullglob
+          FILES=("$HOME"/.claude/projects/*/*.jsonl)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "::notice::no Claude session JSONL found for $ROLE — nothing to render"
+            exit 0
+          fi
+          rc=0
+          for f in "${FILES[@]}"; do
+            gif="$OUT/$(basename "$f" .jsonl).gif"
+            # Renderer output goes to a file: its progress display would
+            # otherwise be noise in the Actions log. Only the name, size and
+            # final summary line are echoed.
+            if uvx agent-log-gif json "$f" -o "$gif" \
+                 --chrome linux --color-scheme Nord --show tools --turns 50 \
+                 > "$RENDER_LOG" 2>&1; then
+              echo "$(basename "$gif") — $(du -h "$gif" | cut -f1) — $(tail -1 "$RENDER_LOG")"
+            else
+              echo "::warning::$ROLE GIF render failed for $(basename "$f")"
+              tail -5 "$RENDER_LOG"
+              rc=1
+            fi
+          done
+          exit $rc
+
+      - name: Upload reviewer transcript GIF
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: reviewer-transcript-gif
+          path: ${{ runner.temp }}/reviewer-gif/*.gif
+          if-no-files-found: warn
+          retention-days: 7

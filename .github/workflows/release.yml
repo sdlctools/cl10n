@@ -1,0 +1,270 @@
+# Tags and releases on every PR merge into main from a release/* or
+# hotfix/* branch — SDLC §3 Phase 4 (release) and §4 (hotfix). Runs the full
+# release sequence the policy mandates, in order:
+#   1. resolve the version (release/* -> from the branch name; hotfix/* ->
+#      latest v* tag + patch; a malformed release name fails the job — §5)
+#   2. tag the merge commit vX.Y.Z (pure SemVer, no sprint suffix — §5 note)
+#   3. publish the GitHub Release (= "deploy main to Production" — there's
+#      no separate deploy step for this repo)
+#   4. back-merge main -> development  (§3 Phase 4 step 6 / §4 Step 4)
+#   5. delete the release/hotfix branch (§3 Phase 4 step 7)
+#
+# Only fires for release/* and hotfix/* head branches — a feature PR merged
+# straight into main does NOT trigger a release (the `if:` guard below).
+#
+# Auth: the default GITHUB_TOKEN works while main/development are unprotected
+# (verified at implementation time). If branch protection is later enabled, or
+# you want the back-merge commit to re-trigger the validator workflow, set a
+# RELEASE_PAT secret and swap GH_TOKEN/GIT_AUTHOR/PAT comments below.
+#
+# This workflow bumps pyproject.toml's version field for PyPI/PEP 440
+# compatibility but does NOT publish to PyPI — no publish step exists yet.
+# See AGENTS.md -> Releasing.
+name: Release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions:
+  contents: write        # create tags + GitHub Releases
+  pull-requests: write  # open the sync-back PR on conflict
+
+jobs:
+  release:
+    name: Tag, release, sync main -> development, cleanup
+    runs-on: ubuntu-latest
+    # Only real merges from a release/* or hotfix/* branch, never a closed
+    # PR or a feature PR sneaking into main.
+    if: >-
+      github.event.pull_request.merged == true
+      && (
+        startsWith(github.event.pull_request.head.ref, 'release/')
+        || startsWith(github.event.pull_request.head.ref, 'hotfix/')
+      )
+    steps:
+      - name: Checkout merge commit (full history + tags)
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: true   # default token pushes tags, releases, back-merge, branch delete
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Resolve version
+        id: version
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          # Previous release on both paths: the most recent v*-prefixed tag
+          # reachable from the merge commit. The Publish step passes this to
+          # `gh release create --notes-start-tag` so the release notes start
+          # from there.
+          # --exclude '*-*' skips pre-release / lab tags (e.g. vX.Y.Z-lab-N) so
+          # only strict stable tags count as the "previous release".
+          prev="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' 2>/dev/null || true)"
+          echo "prev=${prev}" >> "$GITHUB_OUTPUT"
+
+          # The version comes from the head ref, by SDLC §5. The two branch
+          # types differ only in how `next` is resolved; everything downstream
+          # (tag, release, version bump, back-merge, branch delete) is shared.
+          case "${HEAD_REF}" in
+            release/*)
+              # The branch name IS the source of truth — release.yml no longer
+              # re-derives the version from the latest tag + a PR label. The
+              # ONLY accepted form is release/sprint-<X.Y.Z> (no leading v);
+              # this is what cut-release.yml produces and what SDLC §2 names.
+              # One canonical spelling, one regex. A v-prefixed or otherwise
+              # malformed name fails loudly — no fallback to tag arithmetic —
+              # since the way to change a release's version is to rename or
+              # re-cut the branch, not to relabel a PR (SDLC §5).
+              if ! [[ "${HEAD_REF}" =~ ^release/sprint-([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+                echo "::error::Release branch '${HEAD_REF}' is not 'release/sprint-<X.Y.Z>' (no leading 'v' in the version). The branch name is the source of truth for the release version; rename or re-cut the branch."
+                exit 1
+              fi
+              next="v${BASH_REMATCH[1]}"
+              # Display-only bump kind (does NOT drive `next` — the branch name
+              # does). 'initial' on the first release, when no prior tag exists.
+              if [ -z "${prev}" ]; then
+                level="initial"
+              else
+                pv="${prev#v}"; nv="${next#v}"
+                pmj="${pv%%.*}"; rest="${pv#*.}"; pmn="${rest%%.*}"
+                nmj="${nv%%.*}"; rest="${nv#*.}"; nmn="${rest%%.*}"
+                if   [ "${nmj}" -gt "${pmj}" ]; then level="major"
+                elif [ "${nmn}" -gt "${pmn}" ]; then level="minor"
+                else                                 level="patch"
+                fi
+              fi
+              ;;
+            hotfix/*)
+              # A hotfix is by SDLC §4's definition an emergency fix for a
+              # critical production bug — that IS a patch. Always patch-bump
+              # the latest tag; no PR label is read (labels play no part in
+              # the release pipeline anymore — SDLC §5). A hotfix cannot
+              # precede the first release, so a missing prev tag is an error
+              # rather than a silent v0.1.0.
+              level="patch"
+              if [ -z "${prev}" ]; then
+                echo "::error::hotfix/* merged but no release tag exists yet — a hotfix cannot precede the first release."
+                exit 1
+              fi
+              export PREV="${prev}"
+              next="$(node -e '
+                const m = process.env.PREV.match(/^v(\d+)\.(\d+)\.(\d+)$/);
+                if (!m) { console.error("unparseable prev tag:", process.env.PREV); process.exit(2); }
+                let [maj, min, pat] = [+m[1], +m[2], +m[3]];
+                pat++;
+                process.stdout.write(`v${maj}.${min}.${pat}`);
+              ')"
+              ;;
+            *)
+              echo "::error::Unexpected head ref ${HEAD_REF} (expected release/* or hotfix/*)."
+              exit 1
+              ;;
+          esac
+
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          echo "level=${level}" >> "$GITHUB_OUTPUT"
+
+      - name: Print resolved versions
+        env:
+          PREV: ${{ steps.version.outputs.prev }}
+          NEXT: ${{ steps.version.outputs.next }}
+          LEVEL: ${{ steps.version.outputs.level }}
+        run: |
+          echo "bump level : ${LEVEL}"
+          echo "previous   : ${PREV:-<none — first release>}"
+          echo "next       : ${NEXT}"
+
+      - name: Tag the merge commit
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/${NEXT}" >/dev/null; then
+            echo "::error::Tag ${NEXT} already exists; not overwriting. Resolve before re-running."
+            exit 1
+          fi
+          git tag -a "${NEXT}" -m "Release ${NEXT}" "${MERGE_SHA}"
+          git push origin "${NEXT}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREV: ${{ steps.version.outputs.prev }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          # The tag was created + pushed in the previous step on the exact
+          # merge commit, so gh release create just attaches the release to
+          # that existing tag — no --target needed (and avoiding one sidesteps
+          # a gh-version-specific error when --target meets a pre-existing tag).
+          # --generate-notes derives the body from PR titles/commits since the
+          # previous tag (or all history on first release). Using PR titles
+          # avoids this repo's non-Conventional-Commits merge messages and
+          # stays generic for any repo. No CD/PyPI-publish pipeline exists
+          # yet — publishing this Release IS going to production.
+          if [ -n "${PREV}" ]; then
+            gh release create "${NEXT}" --title "${NEXT}" \
+              --generate-notes --notes-start-tag "${PREV}"
+          else
+            gh release create "${NEXT}" --title "${NEXT}" \
+              --generate-notes
+          fi
+
+      - name: Bump pyproject.toml version to ${NEXT}
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          # Strip leading 'v' from NEXT (e.g. v0.3.0 -> 0.3.0) — PEP 440 has no 'v' prefix.
+          NEXT_NO_V="${NEXT#v}"
+          # The previous steps ran on a detached merge_commit_sha; check out main.
+          git checkout -B main origin/main
+          # pyproject.toml is minimal (a single `version = "..."` line under
+          # [project]), so a targeted regex substitution is simpler and safer
+          # here than pulling in a TOML-writing dependency for one field. This
+          # only keeps versioning PyPI/PEP 440-compatible — it does NOT publish
+          # to PyPI (see AGENTS.md -> Releasing).
+          sed -i -E 's/^version = ".*"$/version = "'"${NEXT_NO_V}"'"/' pyproject.toml
+          grep -q "version = \"${NEXT_NO_V}\"" pyproject.toml
+          git add pyproject.toml
+          git commit -m "chore: bump version to ${NEXT_NO_V}"
+          git push origin main
+
+      - name: Back-merge main into development
+        id: sync
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          git fetch origin development
+          git checkout -B development origin/development
+          # --no-ff keeps the merge topology explicit (a real sync commit,
+          # not a fast-forward that would hide that main moved).
+          if git merge --no-ff origin/main -m "chore: sync main into development after ${NEXT}"; then
+            git push origin development
+            echo "synced=pushed" >> "$GITHUB_OUTPUT"
+          else
+            # Conflict -> never force-push. Abort, push a sync branch, open a
+            # PR for a human to resolve (SDLC keeps the final merge human).
+            git merge --abort
+            sync_branch="sync/main-to-dev-${NEXT}"
+            git checkout -B "${sync_branch}" origin/main
+            git push -u origin "${sync_branch}"
+            # Body intentionally backtick-free (unquoted heredoc, ${NEXT} expands).
+            body=$(cat <<EOF
+          Auto-opened by release.yml — back-merge of main into development
+          after ${NEXT} conflicted and needs a human to resolve. SDLC §3
+          Phase 4 step 6 / §4 Step 4 require this sync so the next sprint
+          carries the release's QA fixes.
+          EOF
+          )
+            url=$(gh pr create --base development --head "${sync_branch}" \
+              --title "chore: sync main into development after ${NEXT}" \
+              --body "${body}")
+            echo "synced=${url}" >> "$GITHUB_OUTPUT"
+            echo "::warning::Back-merge conflicted; opened PR for resolution: ${url}"
+          fi
+
+      - name: Delete the release/hotfix branch
+        # SDLC §3 Phase 4 step 7. Acting on the PR's head ref (not a
+        # hardcoded branch) and gated by the job-level `if:` release/* /
+        # hotfix/* check, so main/development can never be targeted here.
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git push origin --delete "${HEAD_REF}"
+          echo "::notice::Deleted branch ${HEAD_REF}"
+
+      - name: Job summary
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+          PREV: ${{ steps.version.outputs.prev }}
+          LEVEL: ${{ steps.version.outputs.level }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          SYNCED: ${{ steps.sync.outputs.synced }}
+        run: |
+          {
+            echo "## Release ${NEXT}"
+            echo ""
+            echo "- merged: \`${HEAD_REF}\` -> main"
+            echo "- bump   : ${LEVEL} (from ${PREV:-<none>})"
+            echo "- tag    : ${NEXT}"
+            echo "- release: https://github.com/${{ github.repository }}/releases/tag/${NEXT}"
+            case "${SYNCED}" in
+              pushed) echo "- sync   : main -> development (pushed)" ;;
+              *)      echo "- sync   : back-merge PR opened — ${SYNCED}" ;;
+            esac
+            echo "- cleanup: deleted \`${HEAD_REF}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

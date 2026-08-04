@@ -126,3 +126,46 @@ def normalize_markdown(src, dst) -> str:
         f.write(final_markdown)
 
 ```
+
+## Releasing
+
+Gitflow across three long-lived surfaces: `development` (default branch),
+`release/sprint-X.Y.Z` (cut per sprint), `main` (production — every commit on
+`main` is a tagged release). Versions are plain SemVer tags `vX.Y.Z`, which
+are also valid PEP 440 versions once the leading `v` is stripped — that's
+what `pyproject.toml`'s `version` field holds.
+
+Normal release flow:
+
+1. Dispatch `.github/workflows/cut-release.yml` manually, choosing a bump
+   level (patch / minor / major, default minor). It resolves the next
+   version from the latest `vX.Y.Z` tag on origin, branches
+   `release/sprint-X.Y.Z` off `development`, and opens a **draft** PR into
+   `main`.
+2. QA fixes land as ordinary PRs into `release/sprint-X.Y.Z` — never
+   directly into `main` and never new features on this branch.
+3. When QA is green, mark the draft PR ready and merge it into `main`.
+4. That merge triggers `.github/workflows/release.yml`, which:
+   - tags the merge commit `vX.Y.Z`,
+   - publishes the GitHub Release,
+   - writes `X.Y.Z` (no leading `v`) into `pyproject.toml`'s `version`
+     field, commits, and pushes to `main`,
+   - back-merges `main` into `development` (opens a PR instead if it
+     conflicts — the sync is never force-pushed),
+   - deletes the `release/sprint-X.Y.Z` branch.
+
+Hotfix flow (SDLC §4) — for an emergency fix to production, not routine
+work: branch `hotfix/<slug>` off `main`, PR it into `main`. On merge,
+`release.yml` (the same workflow, matched by the `hotfix/*` head ref)
+always patch-bumps the latest tag, then runs the same tag / release / bump
+pyproject.toml / back-merge / branch-delete sequence as above.
+
+**Scope note:** this only makes versioning PyPI/PEP 440-compatible
+(`pyproject.toml`'s `version` field is kept current) — no step in either
+workflow publishes to PyPI. A future publish step (e.g. `twine` or
+`pypa/gh-action-pypi-publish`) can consume `pyproject.toml` directly once
+that's needed.
+
+**Prerequisite:** the repo setting "Allow GitHub Actions to create and
+approve pull requests" must be enabled for `cut-release.yml`'s
+`gh pr create --draft` step to succeed.
