@@ -1,9 +1,8 @@
 ---
 description: >-
-  Why reassembly splices inline tokens instead of rebuilding Markdown, what
-  the render-time placeholder gate is for, and the two hazards that turned out
-  to need explicit handling. Read before changing cl10n/reassemble.py, the
-  splice, the fallback rules, or the structure check.
+  cl10n/reassemble.py — how translated units are spliced back into the AST and
+  rendered to locales/<lang>/. Read before changing the splice, the fallback
+  rules, the render-time placeholder gate or the structure check.
 paths:
   - cl10n/reassemble.py
   - cl10n/pseudo_tm.py
@@ -11,26 +10,33 @@ paths:
   - locales/**
 ---
 
-# `cl10n/reassemble.py` — splicing translations back into the tree
+# `cl10n/reassemble.py` — translation memory → `locales/<lang>/`
 
-Steps 10-11 of [`l10n-pipeline-spec.md`](l10n-pipeline-spec.md): translation
-memory plus source document in, `locales/<lang>/<mirrored path>` out. That spec
-fixes the *contract* (COPY semantics in its §2, the English fallback in its §5,
-the file layout in its §6) and leaves the internals here. Where the two
-disagree, the pipeline spec wins and this file is the bug.
+Steps 10-11 of [`l10n-pipeline-spec.md`](l10n-pipeline-spec.md), which owns the
+contract (COPY semantics §2, English fallback §5, file layout §6) and wins
+wherever the two disagree.
+
+## Use it
 
 ```bash
-venv/bin/python3 cl10n/reassemble.py --langs he,ru
-venv/bin/python3 cl10n/reassemble.py --langs he md/skills/_shared/project-config.md
-venv/bin/python3 cl10n/reassemble.py --langs he,ru --dry-run --fail-on-fallback
+venv/bin/python3 cl10n/reassemble.py --langs he,ru                  # md/**/*.md → locales/
+venv/bin/python3 cl10n/reassemble.py --langs he md/skills/x/SKILL.md
+venv/bin/python3 cl10n/reassemble.py --langs he,ru --dry-run --report l10n/render.json
 ```
 
-## 1. The one design decision: structure is never re-derived
+Exit 1 on a placeholder violation or a structure mismatch. `--fail-on-fallback`
+also fails on plain untranslated units — for CI, not for normal runs.
 
-The document is canonicalised, parsed once, and the only mutation is to the
-`inline` token of each translation unit — its children are replaced by the
-tokenisation of the translation, and everything else in the token stream is
-the source's.
+| Entry point | |
+| --- | --- |
+| `render_markdown(md, entries, *, lang) -> (str, RenderReport)` | the core; `entries` is a `TranslationMemory.entries` mapping |
+| `render_file(src, entries, out, *, lang) -> RenderReport` | the same, plus read and atomic write |
+| `locale_path(src, lang)` | `md/<rel>` → `locales/<lang>/<rel>` |
+| `canonicalise(md)` | the mdformat round-trip every unit hash is taken over |
+| `block_signature(md)` | block structure as a nested tuple — how you compare two documents |
+| `RenderReport.fallback_hashes` | distinct hashes rendered as English = the manifest's `localized.<lang>.fallbacks` |
+
+## How it works
 
 ```
 canonicalise(source) ──► tokens ──► SyntaxTreeNode ──► hash_tree
@@ -43,147 +49,69 @@ canonicalise(source) ──► tokens ──► SyntaxTreeNode ──► hash_tr
                      ast_to_markdown ──► locales/<lang>/…
 ```
 
-Heading levels, list nesting, table shape, block quotes and fences are
-therefore preserved **by construction**: no code path can emit a different
-block structure, because no code path constructs block structure at all. This
-is the whole reason to do it this way — the corruption this component could
-cause is invisible to anyone who does not read the target language, so
-"careful code" is not an acceptable substitute for "no such code path".
+The only mutation is an `inline` token's `children` and `content`. Everything
+else in the stream is the source's, so heading levels, list nesting, table
+shape and fences are preserved **by construction** — there is no code path that
+builds block structure, therefore none that can build it wrong. Opaque blocks
+(fences, raw HTML, front matter) are `COPY`: never looked up, never touched.
 
-It is also why the fallback is *nothing happening*. A miss does not
-reconstruct the English text from the TM's `source` field or from a saved
-string; it simply skips the splice, and the source tokens render themselves.
-A fallback path that has to rebuild something is a fallback path that can
-rebuild it wrongly.
+Three consequences worth knowing before you edit:
 
-`SyntaxTreeNode` wraps the very `Token` objects it was built from, so mutating
-`inline.token` and then rendering the original flat token list is not a trick —
-it is the same object.
+- `SyntaxTreeNode` wraps the very `Token` objects it was built from, so
+  mutating the tree and rendering the original flat list is the same thing.
+- The fallback is *nothing happening* — never a reconstruction from the TM's
+  `source` field. A fallback that rebuilds text can rebuild it wrongly.
+- `parse_inline` runs inline rules only, so a translation starting with `- `
+  stays a paragraph instead of becoming a list.
 
-### Why `parse_inline`, not a block parse
+## Fallbacks and the render-time gate
 
-A translation is inline content by definition. `utils.parse_inline` runs
-markdown-it's inline rules only, so a translated segment that happens to begin
-with `- ` or `1. ` stays one paragraph instead of quietly becoming a list.
-Block-parsing the translated string and fishing the `inline` token out of the
-result would look equivalent and would not be.
-
-### Canonicalise first
-
-`canonicalise` is the same mdformat round-trip `tree_diff` hashes over, so the
-unit hashes computed here are the ones the planner enqueued and the runner
-keyed the TM by. It also makes AC1 — empty TM reproduces the source byte for
-byte — a statement about a stable form rather than about whatever the file
-happened to look like. Verified on the corpus: the round trip is idempotent,
-and unit hashes are identical before and after it.
-
-## 2. The render-time placeholder gate
-
-The rule lives in [`cl10n/placeholders.py`](../../cl10n/placeholders.py) and is
-enforced twice: by `queue_runner` on every API response, and again here on
-every TM entry about to be spliced.
-
-The second check is **not** redundant. `l10n/tm/<lang>.json` is a committed,
-reviewable, human-editable artifact — that is what `review_status: "approved"`
-means — and it can also be written by an older runner or a different
-implementation of it (the pipeline spec's §7 compatibility bar invites exactly
-that). The renderer is the last thing standing between a broken command or a
-redirected link and a published document, so it checks.
-
-A unit renders as English in three cases, and the report names all three:
-
-| TM state | reason reported |
+| TM state | reported as |
 | --- | --- |
-| no entry — never translated, or its job ended `rejected` (pipeline spec §5) | `untranslated` |
-| entry whose `translation` is empty or whitespace | `empty_translation` |
+| no entry — never translated, or its job ended `rejected` | `untranslated` |
+| entry whose translation is empty (rendering it would blank a paragraph) | `empty_translation` |
 | entry that lost a placeholder | `placeholder_lost` |
 
-`empty_translation` exists because rendering an empty string would *blank a
-paragraph*, which is worse than leaving English: it is a silent deletion, and
-it also breaks the structure check.
+The gate is [`cl10n/placeholders.py`](../../cl10n/placeholders.py), the same
+rule `queue_runner` applies to API responses. Running it *again* here is not
+redundant: `l10n/tm/<lang>.json` is committed and hand-editable
+(`review_status: "approved"` means a human edited it), and the renderer is the
+last thing between a broken command and a published document.
 
-The gate compares against the **node's** source text, not the entry's `source`
-field. They agree by construction — the entry's key is the hash of that text —
-and trusting the node keeps a hand-edited `source` from waving a broken
-translation through.
+Every render re-parses its own output and compares `block_signature` with the
+source. On a mismatch it raises `StructureMismatch`, the CLI **does not write
+that file** and exits non-zero, and the rest of the corpus still renders.
 
-Note a property inherited from `tree_diff._placeholders`: a code span's
-placeholder is its *content*, so `` `create` `` contributes the bare string
-`create`, and the "at least as many times" rule then counts occurrences of that
-word in ordinary prose too. Both gates share the behaviour, so a TM entry the
-runner accepted always passes here; it only matters when generating synthetic
-translations (see §5).
+## Two hazards, both handled
 
-## 3. Two hazards that needed explicit handling
+- **Newline in a `th`/`td` translation** ends the GFM pipe-table row and grows
+  the document a phantom line — the one corruption the splice can cause on its
+  own. Whitespace is collapsed for cells only (`SINGLE_LINE_TYPES`); mdformat
+  already collapses newlines in headings, and a paragraph's soft breaks are
+  legitimate.
+- **RTL needed nothing**, and the reason matters so nobody adds any:
+  `ast_to_markdown` uses `compact_tables`, so cells are never padded to a
+  column width and the wcwidth/bidi questions never arise.
 
-Everything else fell out of §1. These did not:
+## Not here
 
-**A newline inside a table cell.** GFM pipe-table rows are single-line: a
-translation containing `\n` spliced into a `th`/`td` ends the row and the
-document grows a phantom table line — the one structural corruption the splice
-can cause on its own. Whitespace in a cell translation is therefore collapsed
-(`SINGLE_LINE_TYPES`). Headings need no such handling because mdformat already
-collapses newlines in them, and a paragraph's soft breaks are legitimate and
-must survive.
+- **The manifest.** This reports `fallback_hashes`; writing them, plus
+  `source_blob`, `doc_hash` and RETIRE GC, is the orchestrator's.
+- **Choosing what to render.** Pipeline spec §2: render whenever `plan` emitted
+  anything but pure `REUSE`. This module renders what it is given.
+- **Anything provider- or queue-shaped.** An `await` or a Groq import in here
+  means something went wrong.
+- `cl10n/pseudo_tm.py` is **dev scaffolding** — a pseudolocalized memory so the
+  corpus renders in both languages with no API key. It writes gibberish into
+  what is otherwise a committed artifact; point it at a scratch directory.
 
-**Right-to-left output.** Hebrew needed no special handling in the end, and
-the reason is worth recording so nobody adds any: `ast_to_markdown` renders
-tables with `compact_tables`, so cells are never padded to a column width and
-the wcwidth/bidi questions never arise. Verified on the real corpus — nested
-lists, tables, inline code and fences all survive the round trip in `he`, and
-the rendered files are structurally identical to the source.
+## Don't break
 
-## 4. The structure check
-
-Every render re-parses its own output and compares `block_signature` — the
-nested tuple of node types and tags, stopping at `inline` — against the
-source's. Inside a unit things legitimately differ (a placeholder may sit in a
-different clause in Hebrew); what contains it may not.
-
-On a mismatch, `render_markdown` raises `StructureMismatch` and the CLI
-**does not write that file** and exits non-zero, while the rest of the corpus
-still renders. A structurally corrupt file is the one output worse than no
-output. It costs one extra parse per file and it is not optional — `--no-verify`
-exists for debugging the checker, not for runs.
-
-## 5. `cl10n/pseudo_tm.py` — development scaffolding
-
-Writes a *pseudolocalized* TM: the prose transliterated into Hebrew or
-Cyrillic glyphs, every non-translatable span byte-identical. It exists so the
-render path can be exercised end-to-end — both languages, the whole corpus,
-RTL text in tables and nested lists — without a single API call or a key, and
-it is what most of the test suite's "translations" are.
-
-It is **not** a pipeline component and must not become one: it writes
-gibberish into what is otherwise a committed artifact, so point it at a
-scratch directory. For a memory with meaning, run `cl10n/queue_runner.py`.
-
-## 6. What is not here
-
-**The manifest.** This module *reports* `fallback_hashes` per (document,
-language) — precisely the manifest's `localized.<lang>.fallbacks` (pipeline
-spec §6), per hash rather than per occurrence — and `--report` writes them as
-JSON. Recording them in `l10n/manifest.json`, along with `source_blob`,
-`doc_hash` and the RETIRE garbage collection, belongs to the orchestrator.
-
-**Deciding what to render.** Pipeline spec §2: render whenever `plan` emitted
-anything but pure `REUSE`, because a changed `COPY` block changes the output
-with no queue and no TM write. This module renders what it is given; choosing
-the set is the orchestrator's job.
-
-**Any provider or queue knowledge.** Reassembly reads a TM and a source file.
-If you find an `await` or a Groq import in here, something has gone wrong.
-
-## 7. Conventions any change must preserve
-
-1. The token stream is mutated in exactly one place: an `inline` token's
-   `children` and `content`. Nothing else is ever constructed or reordered.
-2. A unit with no usable translation is left untouched — the fallback is the
-   absence of a splice, never a reconstruction.
-3. Unit identity, unit source and the placeholder list come from `tree_diff`,
-   never from a second implementation here. The private aliases at the top of
-   the module are deliberate: a rename there must break this import.
+1. One mutation only: an `inline` token's `children` and `content`.
+2. No usable translation ⇒ leave the tokens alone.
+3. Unit identity, unit source and placeholders come from `tree_diff` — the
+   private aliases at the top of the module are deliberate, so a rename there
+   breaks this import instead of silently drifting.
 4. The structure check runs on every render and refuses to write on mismatch.
-5. Output paths mirror the source tree: `md/<rel>` → `locales/<lang>/<rel>`.
-6. Writes go through `l10n_store.atomic_write_text` like every other state
+5. Writes go through `l10n_store.atomic_write_text`, like every other state
    file in the pipeline.
