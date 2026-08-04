@@ -1,15 +1,40 @@
-markdown-it-py
-mdit-py-plugins
-mdformat
-mdformat-frontmatter
-mdformat-gfm
-groq
+# The parsing stack is PINNED EXACTLY, and that is not fussiness.
+#
+# Every unit hash in every `l10n/tm/<lang>.json` is taken over the output of
+# `app/utils.make_parser`, which is these five packages in a specific
+# configuration. A minor upgrade can (and twice already did) change what the
+# parser emits:
+#
+#   * markdown-it-py 4.2 began parsing task lists natively, emitting no
+#     checkbox token — mdformat's list renderer asserts on the missing token,
+#     so every document containing `- [ ]` raised.
+#   * the same release began parsing GitHub alerts into `alert` nodes, which
+#     mdformat cannot render at all — `KeyError: 'alert'`.
+#
+# A change that does not raise is worse: it silently alters the canonical form,
+# every hash moves, and the next run re-translates the entire corpus at full
+# price while orphaning the existing memory.
+#
+# So: upgrade these deliberately, one at a time, and run the drift detector.
+#
+#     venv/bin/python3 cl10n/compat_check.py
+#
+# It compares the parser's option surface, its renderable node types and the
+# canonical form of `cl10n/tests/fixtures/kitchen-sink.md` against
+# `cl10n/compat-baseline.json`. Green means the upgrade is safe to take; re-record
+# with `--update` only when you have read the diff and understood every line.
+markdown-it-py==4.2.0
+mdit-py-plugins==0.6.1
+mdformat==1.0.0
+mdformat-gfm==1.0.0
+mdformat-frontmatter==2.1.2
+linkify-it-py==2.1.0
 
- 
- 
-linkify-it-py
+# Not part of the hashing contract — ordinary dependency, upgrade freely.
+groq
 
 # tests
 pytest
 pytest-asyncio
 jsonschema
+pyyaml

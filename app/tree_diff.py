@@ -342,6 +342,15 @@ def _heading_trail(node: SyntaxTreeNode) -> str:
     return " › ".join(reversed(trail))
 
 
+# GitHub alert markers. These are keywords, not prose: `> [!NOTE]` is what
+# makes GitHub render the blockquote as an alert, and a model that helpfully
+# translates it produces a blockquote that merely *looks* like one. They are
+# plain text in the token stream — the parser is configured to read alerts as
+# ordinary blockquotes, because mdformat cannot render the dedicated `alert`
+# nodes at all (see `app/utils.py`) — so nothing else here would protect them.
+_ALERT_MARKER = re.compile(r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]")
+
+
 def _placeholders(node: SyntaxTreeNode) -> list[str]:
     """Inline spans the translator must reproduce byte-for-byte.
 
@@ -357,6 +366,7 @@ def _placeholders(node: SyntaxTreeNode) -> list[str]:
         if n.type == "link":
             out.append(n.attrs.get("href", ""))
         stack.extend(n.children)
+    out.extend(_ALERT_MARKER.findall(_unit_source(node)))
     return [p for p in out if p]
 
 

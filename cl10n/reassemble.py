@@ -101,6 +101,13 @@ SINGLE_LINE_TYPES = {"th", "td"}
 
 _WS = re.compile(r"\s+")
 
+# A task-list item's checkbox is block structure that the tasklists extension
+# parks in an *inline* child: a leading `html_inline` token which mdformat reads
+# back to re-emit `- [x] `. It is the one piece of an inline token's children
+# that does not belong to the translation, so the splice has to carry it across
+# rather than replace it. See `_tasklist_checkbox`.
+_TASKLIST_CHECKBOX = 'class="task-list-item-checkbox"'
+
 
 class StructureMismatch(RuntimeError):
     """The rendered document's block structure differs from the source's.
@@ -255,6 +262,20 @@ def _inline_child(unit):
     return None
 
 
+def _tasklist_checkbox(token):
+    """The leading checkbox token of a task-list item, or `None`.
+
+    Returns the `Token` itself so the splice can re-insert the very same
+    object: mdformat reads `checked="checked"` out of its content to decide
+    between `- [ ] ` and `- [x] `, so the state has to survive verbatim rather
+    than be reconstructed.
+    """
+    first = (token.children or [None])[0]
+    if first is not None and first.type == "html_inline" and _TASKLIST_CHECKBOX in first.content:
+        return first
+    return None
+
+
 def _resolve(unit, entries) -> tuple[str | None, Fallback | None]:
     """The text to splice into `unit`, or the reason it stays English.
 
@@ -319,7 +340,15 @@ def splice(tokens, entries, report: RenderReport) -> None:
             report.fallbacks.append(fallback)
             continue
         text = _fit(unit.type, translation)
-        inline.token.children = parse_inline(text)
+        children = parse_inline(text)
+        checkbox = _tasklist_checkbox(inline.token)
+        if checkbox is not None:
+            # Structure, not content — see `_TASKLIST_CHECKBOX`. Dropping it
+            # leaves a `list_item` still classed `task-list-item` whose checkbox
+            # token is gone, which mdformat's list renderer refuses outright, so
+            # one translated checklist would take the whole document down.
+            children.insert(0, checkbox)
+        inline.token.children = children
         inline.token.content = text
         report.translated += 1
 

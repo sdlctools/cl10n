@@ -113,20 +113,82 @@ The design — why the splice is the only mutation, why the fallback is the
 hazard and why RTL needed no special handling — is in
 [`.claude/rules/cl10n-reassembly-spec.md`](.claude/rules/cl10n-reassembly-spec.md).
 
+## cl10n/ — the orchestrator CLI and the CI workflow (steps 3-6, 10-12)
+
+`cl10n/cli.py` is the pipeline's single entry point — the same four
+subcommands for a human and for CI, and no bootstrap mode: a first-time
+translation is an incremental update whose previous revision recovers empty.
+
+```bash
+venv/bin/python3 cl10n/cli.py plan   --langs he,ru      # manifest + git blobs → queue
+venv/bin/python3 cl10n/cli.py run    l10n/queue/queue.json -c 8
+venv/bin/python3 cl10n/cli.py render --langs he,ru      # TM → locales/, manifest, RETIRE GC
+venv/bin/python3 cl10n/cli.py status --langs he,ru      # coverage per language
+```
+
+`plan` is the real enqueue step: it recovers each document's last-localized
+revision through `l10n/manifest.json` + `git cat-file blob`, diffs, and lets
+the **translation memory decide** what becomes a job — so nothing is ever
+translated twice, and a rejected unit (English fallback) is re-enqueued until
+it lands. `cl10n/manifest.py` owns the ledger and RETIRE garbage collection;
+`cl10n/ci_report.py` renders the run reports into the PR body.
+
+`.github/workflows/cl10n.yml` runs `plan → run → render` on every push to the
+default branch that touches `md/**`, and opens/updates a PR from the fixed
+branch `cl10n/translations` — never a direct push. An interrupted or
+rate-limited run loses nothing: the resume state is the translation memory
+(committed, plus the open PR branch and a crash artifact, folded in with
+`plan --restore-tm`), and the next run pays only for what is missing.
+
+The design — why the TM rather than the queue is the resume state, the
+enqueue rule, the workflow's concurrency and secrets decisions — is in
+[`.claude/rules/cl10n-cli-spec.md`](.claude/rules/cl10n-cli-spec.md).
+
+[`cl10n/USERGUIDE.md`](cl10n/USERGUIDE.md) is the long-form companion: every
+flag of every subcommand, real output with the numbers explained, and the
+worked flows — first localization, adding a language, day-to-day updates —
+plus a cookbook and a troubleshooting table. Read the spec for *why*, the
+guide for *how*. [`cl10n/INTEGRATION.md`](cl10n/INTEGRATION.md) covers
+vendoring the pipeline into another repository, which has its own failure
+modes: which files to copy (not `cl10n/tests/` — they test *this* repo), what
+committing actually buys, and the one-manifest-per-repository rule that
+silently deletes translations if you invert it.
+
+## the parsing stack is pinned, and drift is checked
+
+`requirements.txt` pins markdown-it-py, mdit-py-plugins, mdformat,
+mdformat-gfm, mdformat-frontmatter and linkify-it-py **exactly**. Every unit
+hash in every translation memory is taken over `app/utils.make_parser`, which
+is those packages in one configuration — a minor upgrade twice taught
+markdown-it-py to parse something (task lists, GitHub alerts) that mdformat
+cannot render, and an unrenderable construct cannot be localized at all.
+
+```bash
+venv/bin/python3 cl10n/compat_check.py            # gate for moving a pin
+venv/bin/python3 cl10n/compat_check.py --update   # re-record; then read the diff
+```
+
+It checks the parser's option surface, its renderable node types, and the
+canonical form plus unit hashes of `cl10n/tests/fixtures/kitchen-sink.md`
+against `cl10n/compat-baseline.json`. `.github/workflows/checks.yml` runs it
+and the test suite on every push and PR, plus weekly against the newest
+releases as early warning. Rationale and the three drift classes:
+[`.claude/rules/tree-diff-spec.md`](.claude/rules/tree-diff-spec.md) →
+"The parser configuration is part of the contract".
+
 ## tests
 
 ```bash
 venv/bin/python3 -m pytest                                            # full suite
 venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
+venv/bin/python3 -m pytest cl10n/tests/test_compat.py                 # drift detector
 ```
 
 Provider access is stubbed throughout — no test needs an API key, and none
 makes a network call. The reassembly tests run against the real `md/` corpus
 with a pseudolocalized memory, so they cover both target languages end to end.
-
-Not built yet: the orchestrator — the real enqueue step (manifest +
-`git show <blob>` recovery of the previous revision), RETIRE garbage
-collection, and writing `l10n/manifest.json`.
+The orchestrator tests build a real throwaway git repo per test and drive the
+full `plan → run → render` cycle, including a mid-run kill and resume.
 
 ## python libs in use
 W're dealing with complex markdown structires (gfm compatible) and  hardly rely on mdformat, merkdown-it-py packages, and their plugins.. See how to process markdown to ast and vice versa.
