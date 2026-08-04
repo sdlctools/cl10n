@@ -70,18 +70,37 @@ cp "$UPSTREAM"/app/groq_api.py   "$PROJECT/app/"
 cp "$UPSTREAM"/requirements.txt  "$PROJECT/"
 ```
 
-If your project already has a `requirements.txt`, merge rather than overwrite.
-The pipeline needs:
+If your project already has a `requirements.txt`, merge rather than overwrite —
+and **keep the exact pins**, they are load-bearing:
 
 ```
-markdown-it-py
-mdit-py-plugins
-mdformat
-mdformat-frontmatter
-mdformat-gfm
-linkify-it-py
+markdown-it-py==4.2.0
+mdit-py-plugins==0.6.1
+mdformat==1.0.0
+mdformat-gfm==1.0.0
+mdformat-frontmatter==2.1.2
+linkify-it-py==2.1.0
 groq
 ```
+
+Every unit hash in your translation memory is taken over these five packages in
+one specific configuration. A minor upgrade has twice taught markdown-it-py to
+parse a construct mdformat cannot render — task lists, then GitHub alerts —
+and a construct that cannot be rendered cannot be localized. A change that does
+*not* raise is worse: it silently alters the canonical form, every hash moves,
+and your next run re-translates the whole corpus at full price while orphaning
+the memory you already paid for.
+
+So also copy `cl10n/compat_check.py`, `cl10n/compat-baseline.json` and
+`cl10n/tests/fixtures/kitchen-sink.md` — the drift detector is the gate for
+ever moving one of those pins:
+
+```bash
+venv/bin/python3 cl10n/compat_check.py
+```
+
+This is the one part of `cl10n/tests/` worth taking with you; the rest tests
+the upstream repository (see [section 1](#1-what-you-are-actually-copying)).
 
 `pytest`, `pytest-asyncio`, `jsonschema` and `pyyaml` are for the upstream test
 suite only — skip them if you are not copying the tests.

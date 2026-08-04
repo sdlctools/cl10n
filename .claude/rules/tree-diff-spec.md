@@ -145,6 +145,32 @@ verified byte-for-byte over the corpus. Anything that alters this parser is a
 corpus-wide rehash, so `cl10n/tests/test_canonicalise.py` pins the constructs
 and their normalisations.
 
+### Detecting the next one automatically
+
+Both breakages arrived the same way: an unpinned minor upgrade taught
+markdown-it-py to parse something mdformat cannot render. So the parsing stack
+is now **pinned exactly** in `requirements.txt`, and
+[`cl10n/compat_check.py`](../../cl10n/compat_check.py) is the gate for moving a
+pin:
+
+```bash
+venv/bin/python3 cl10n/compat_check.py            # verify
+venv/bin/python3 cl10n/compat_check.py --update   # re-record, then read the diff
+```
+
+It compares three things against `cl10n/compat-baseline.json`, cheapest signal
+first: the parser's **option surface** (a preset gaining an option is visible
+before any document triggers it — this alone would have caught `alerts`), its
+**renderable node types** (the crash class), and the **canonical form and unit
+hashes** of `cl10n/tests/fixtures/kitchen-sink.md` (the silent class, where
+nothing raises and the whole corpus quietly rehashes).
+
+`.github/workflows/checks.yml` runs it on every push and pull request against
+the pinned stack, and weekly against the *latest* releases — so an upstream
+change is reported while the pins are still protecting us, rather than on the
+afternoon somebody bumps one. A version bump on its own is context, never a
+finding; only a behaviour change fails.
+
 ## Pipeline
 
 ```

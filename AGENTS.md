@@ -154,11 +154,34 @@ modes: which files to copy (not `cl10n/tests/` — they test *this* repo), what
 committing actually buys, and the one-manifest-per-repository rule that
 silently deletes translations if you invert it.
 
+## the parsing stack is pinned, and drift is checked
+
+`requirements.txt` pins markdown-it-py, mdit-py-plugins, mdformat,
+mdformat-gfm, mdformat-frontmatter and linkify-it-py **exactly**. Every unit
+hash in every translation memory is taken over `app/utils.make_parser`, which
+is those packages in one configuration — a minor upgrade twice taught
+markdown-it-py to parse something (task lists, GitHub alerts) that mdformat
+cannot render, and an unrenderable construct cannot be localized at all.
+
+```bash
+venv/bin/python3 cl10n/compat_check.py            # gate for moving a pin
+venv/bin/python3 cl10n/compat_check.py --update   # re-record; then read the diff
+```
+
+It checks the parser's option surface, its renderable node types, and the
+canonical form plus unit hashes of `cl10n/tests/fixtures/kitchen-sink.md`
+against `cl10n/compat-baseline.json`. `.github/workflows/checks.yml` runs it
+and the test suite on every push and PR, plus weekly against the newest
+releases as early warning. Rationale and the three drift classes:
+[`.claude/rules/tree-diff-spec.md`](.claude/rules/tree-diff-spec.md) →
+"The parser configuration is part of the contract".
+
 ## tests
 
 ```bash
 venv/bin/python3 -m pytest                                            # full suite
 venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
+venv/bin/python3 -m pytest cl10n/tests/test_compat.py                 # drift detector
 ```
 
 Provider access is stubbed throughout — no test needs an API key, and none
