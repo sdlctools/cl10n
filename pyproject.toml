@@ -1,4 +1,4 @@
 [project]
 name = "markdown-localization"
-version = "0.1.0"
+version = "0.1.0-dev.1"
 description = "Markdown-styled content translation and continuous localization research"
