@@ -8,3 +8,8 @@ groq
  
  
 linkify-it-py
+
+# tests
+pytest
+pytest-asyncio
+jsonschema
