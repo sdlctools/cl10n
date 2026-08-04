@@ -92,6 +92,14 @@ that file** and exits non-zero, and the rest of the corpus still renders.
 - **RTL needed nothing**, and the reason matters so nobody adds any:
   `ast_to_markdown` uses `compact_tables`, so cells are never padded to a
   column width and the wcwidth/bidi questions never arise.
+- **A task-list checkbox is block structure parked in an inline child.** The
+  tasklists extension represents `- [x] ` as a leading `html_inline` token
+  among the item's *inline* children, and mdformat reads `checked="checked"`
+  back out of it. Replacing those children wholesale — which is what the splice
+  does — drops it, leaving a `list_item` still classed `task-list-item` with no
+  checkbox to render, which raises rather than degrading. `_tasklist_checkbox`
+  carries the original token across; it is the one child of an inline token
+  that is not translatable content.
 
 ## Not here
 

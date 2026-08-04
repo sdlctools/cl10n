@@ -373,22 +373,22 @@ render and you keep it. Forget once and nothing is broken.
 
 Setup:
 
-- `cl10n/*.py` and the three `app/` modules copied; `cl10n/tests/` **not** copied
-- dependencies merged into `requirements.txt` and installed into `venv/`
-- `l10n/queue/` and `groq_creds.txt` in `.gitignore`
-- project is a git repository and the corpus is committed
+- [ ] `cl10n/*.py` and the three `app/` modules copied; `cl10n/tests/` **not** copied
+- [ ] dependencies merged into `requirements.txt` and installed into `venv/`
+- [ ] `l10n/queue/` and `groq_creds.txt` in `.gitignore`
+- [ ] project is a git repository and the corpus is committed
 
 Verification, in order:
 
-- `status` runs and reports your documents with a plausible unit count
-- `run --dry-run` shows the call count you expect before you spend anything
-- one rendered file read by eye: code spans, links, tables, heading levels intact
-- the one-sentence edit produces exactly one `REVISE` job
+- [ ] `status` runs and reports your documents with a plausible unit count
+- [ ] `run --dry-run` shows the call count you expect before you spend anything
+- [ ] one rendered file read by eye: code spans, links, tables, heading levels intact
+- [ ] the one-sentence edit produces exactly one `REVISE` job
 
 Shipping:
 
-- `locales/`, `l10n/tm/` and `l10n/manifest.json` committed together
-- workflow adapted, `GROQ_API_KEY` secret added, first run triggered manually
+- [ ] `locales/`, `l10n/tm/` and `l10n/manifest.json` committed together
+- [ ] workflow adapted, `GROQ_API_KEY` secret added, first run triggered manually
 
 ## 11. Integration troubleshooting
 

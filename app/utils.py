@@ -16,6 +16,17 @@ def make_parser() -> MarkdownIt:
     # 1. Initialize parser and the required plugin list
     md = MarkdownIt("gfm-like2")
     md.options["linkify"] = False
+    # markdown-it-py >= 4.2's `gfm-like2` parses task lists *natively*: it sets
+    # `class="task-list-item"` and eats the `[ ] ` marker, but emits no token
+    # for the checkbox. `mdformat_gfm`'s list-item renderer was written against
+    # `mdit_py_plugins.tasklists`, which *does* emit one, so it sees the class,
+    # goes looking for the checkbox and trips an assertion — every task list in
+    # the corpus becomes an unrenderable document. Turning the native
+    # implementation off hands task lists back to the plugin that
+    # `mdformat_gfm.update_mdit` already installs below, which is the only one
+    # of the two the renderer can read. Hash-neutral: no other construct's
+    # token stream changes, so no translation-memory key moves.
+    md.options["tasklists"] = False
     md.options["parser_extension"] = []
 
     # 2. Dynamically load EVERY installed mdformat plugin (GFM, tables, frontmatter, etc.)
