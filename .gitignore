@@ -8,3 +8,8 @@ __pycache__/
 # l10n run artifacts — queue files are per-run state, never committed
 # (.claude/rules/l10n-pipeline-spec.md §6)
 l10n/queue/
+
+# Local provider credentials — read by app/queue_runner.py --creds-file
+groq_creds.txt
+
+.pytest_cache/
