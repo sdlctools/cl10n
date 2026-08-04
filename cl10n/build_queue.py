@@ -9,7 +9,7 @@ today: plan every document against the empty document (spec §1's degenerate
 first-time case), keep the two actions that become jobs, and write a queue file
 that validates against `app/schemas/queue.schema.json`.
 
-    venv/bin/python3 app/build_queue.py --langs he,ru -o l10n/queue/queue.json
+    venv/bin/python3 cl10n/build_queue.py --langs he,ru -o l10n/queue/queue.json
 
 Nothing here writes to the translation memory or the manifest.
 """
@@ -22,12 +22,13 @@ import os
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
 
-import tree_diff  # noqa: E402
+import tree_diff  # noqa: E402  (app/ — the planner this scaffolding drives)
 from l10n_store import new_job, new_queue, save_queue  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(_HERE)
 ENQUEUEABLE = {"TRANSLATE", "REVISE"}
 
 

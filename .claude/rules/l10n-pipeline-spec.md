@@ -7,6 +7,7 @@ description: >-
   or changing any pipeline component, state file, or schema.
 paths:
   - app/**
+  - cl10n/**
   - l10n/**
   - locales/**
 ---
@@ -52,8 +53,9 @@ implementation sub-tasks build against.
               6. enqueue                      one job per (lang, unit_hash)
                           │                   needing the LLM → l10n/queue/
                           ▼
-              7. execute                      async Groq runner (app/groq_api.py
-                          │                   prompt), per-job state machine §4
+              7. execute                      async Groq runner — built, see
+                          │                   cl10n/ and cl10n-runner-spec.md;
+                          │                   per-job state machine §4
                           ▼
               8. validate                     placeholder gate §5
                           │

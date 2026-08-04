@@ -15,8 +15,9 @@ import sys
 import httpx
 import pytest
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO, "app"))
+CL10N = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(CL10N)
+sys.path[:0] = [CL10N, os.path.join(REPO, "app")]
 
 import l10n_store  # noqa: E402
 

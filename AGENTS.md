@@ -15,6 +15,9 @@ There is n working pipeline, our task is to research this operation.
 * demos/  - some intermediate test scripts
 * md - source markdown files (mostly taken from other projects)
 * app - working examples, this where you put new files
+* cl10n/ - the continuous-localization runtime (queue runner, state store,
+  its tests). New pipeline components go here, not in app/, so the runtime
+  stays reviewable on its own.
 * .claude/rules/ - design specs, auto-loaded when their `paths:` are touched
 
 
@@ -47,9 +50,9 @@ with the three JSON data contracts (translation memory, queue, manifest) in
 corpus in `app/schemas/examples/`. Pipeline components must implement against
 those schemas.
 
-## queue runner (step 7 — executing the queue)
+## cl10n/ — the localization runtime (step 7: executing the queue)
 
-`app/queue_runner.py` takes a queue file and drives it to completion against
+`cl10n/queue_runner.py` takes a queue file and drives it to completion against
 Groq: bounded concurrency, per-job retry with exponential backoff and jitter,
 an account-wide rate-limit gate, the placeholder gate, and translation-memory
 writes with provenance. It resumes from wherever a previous run stopped —
@@ -57,16 +60,22 @@ kill it at any point and re-run it; `done` and `rejected` jobs are never
 re-billed.
 
 ```bash
-venv/bin/python3 app/queue_runner.py l10n/queue/queue.json --dry-run   # plan only, no API
-venv/bin/python3 app/queue_runner.py l10n/queue/queue.json -c 8
-venv/bin/python3 app/build_queue.py --langs he,ru -o l10n/queue/queue.json
+venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run  # plan only, no API
+venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json -c 8
+venv/bin/python3 cl10n/build_queue.py --langs he,ru -o l10n/queue/queue.json
 ```
 
 `GROQ_API_KEY` comes from the environment, or from `groq_creds.txt`
-(gitignored) via `--creds-file`. `app/l10n_store.py` holds the atomic-write,
-queue and TM primitives; `app/build_queue.py` is **dev scaffolding** that
+(gitignored) via `--creds-file`. `cl10n/l10n_store.py` holds the atomic-write,
+queue and TM primitives; `cl10n/build_queue.py` is **dev scaffolding** that
 plans the corpus against the empty document — it is not the pipeline's real
 enqueue step, which belongs to its own sub-task.
+
+The design — write orderings, resumption, retry classification, why the
+rate-limit gate is account-wide rather than per-job, when `PROMPT_VERSION`
+may be bumped, and what must not move into `cl10n/` — is in
+[`.claude/rules/cl10n-runner-spec.md`](.claude/rules/cl10n-runner-spec.md).
+Read it before changing concurrency, retries, persistence, or prompts.
 
 Measured on the real corpus (30 units, `he`, free-tier account at 8000 TPM):
 232s serially vs 156s at `-c 8`, and the shared rate-limit gate took the run
@@ -75,8 +84,8 @@ from 4 jobs lost to throttling down to 0.
 ## tests
 
 ```bash
-venv/bin/python3 -m pytest                                   # full suite
-venv/bin/python3 -m pytest tests/test_queue_runner.py -k NAME  # one test
+venv/bin/python3 -m pytest                                            # full suite
+venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
 ```
 
 Provider access is stubbed throughout — no test needs an API key, and none

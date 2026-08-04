@@ -6,9 +6,9 @@ keep the file on disk an accurate picture of progress at all times. It does not
 decide *what* to translate (that is `tree_diff.plan`) and does not turn
 translations back into Markdown (that is reassembly).
 
-    venv/bin/python3 app/queue_runner.py l10n/queue/queue.json
-    venv/bin/python3 app/queue_runner.py l10n/queue/queue.json --dry-run
-    venv/bin/python3 app/queue_runner.py l10n/queue/queue.json --concurrency 8
+    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json
+    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run
+    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --concurrency 8
 
 Three things carry the design, all from spec §4:
 
@@ -56,10 +56,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# This package plus `app/`, which owns the prompt (`groq_api`) and the planner
+# (`tree_diff`). Bare scripts rather than an installed package is the repo's
+# existing convention — see `app/tree_diff.py`.
+sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
 
 import groq  # noqa: E402  (imported for its exception taxonomy — see classify)
-import groq_api  # noqa: E402  (sibling module, path fixed up above)
+import groq_api  # noqa: E402  (app/, path fixed up above)
 from l10n_store import TranslationMemory, load_queue, save_queue, utc_now  # noqa: E402
 
 TERMINAL_STATES = {"done", "rejected"}
