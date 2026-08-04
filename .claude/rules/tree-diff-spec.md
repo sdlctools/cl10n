@@ -119,6 +119,32 @@ Deliberately excluded from the hash:
 
 Including either would make every diff document-wide dirty.
 
+### The parser configuration is part of the contract
+
+`utils.make_parser` is the single parser every stage shares, and two of its
+options are switched **off** against the `gfm-like2` preset's defaults. Both
+for the same reason: markdown-it-py grew a native implementation of a
+construct that mdformat cannot render, and a construct that cannot be rendered
+cannot be canonicalised, hashed, planned or localized — it raises.
+
+| Option | Off because |
+| --- | --- |
+| `tasklists` | native parsing marks the item `task-list-item` but emits no checkbox token; `mdformat_gfm`'s list renderer reads that class and asserts on the checkbox only `mdit_py_plugins.tasklists` produces. Off, that plugin — which `mdformat_gfm` installs anyway — owns task lists, and the renderer finds what it expects |
+| `alerts` | `> [!NOTE]` parses into `alert` / `alert_title` nodes and mdformat has a renderer for neither: `KeyError: 'alert'`. Off, alerts are ordinary blockquotes, which round-trip byte-for-byte and render identically on GitHub |
+
+Turning `alerts` off puts the `[!NOTE]` marker inside the paragraph's inline
+content, so it lands in a translation unit and a model may translate it,
+producing a blockquote that only looks like an alert. `_placeholders` therefore
+protects the five GitHub alert keywords, which costs nothing and makes a
+translated marker a gate failure — a retry, then an English fallback — rather
+than a silent downgrade. Doing better would mean teaching mdformat to render
+`alert` nodes; until then this is the honest trade.
+
+Both switches are **hash-neutral**: no other construct's token stream changes,
+verified byte-for-byte over the corpus. Anything that alters this parser is a
+corpus-wide rehash, so `cl10n/tests/test_canonicalise.py` pins the constructs
+and their normalisations.
+
 ## Pipeline
 
 ```

@@ -45,6 +45,25 @@ GFM_CONSTRUCTS = {
     "fence": "```bash\necho hello\n```\n",
     "heading + paragraph": "# Title\n\nA paragraph.\n",
     "blockquote": "> quoted text\n",
+    "alert": "> [!NOTE]\n> Useful information.\n",
+    "alert, warning": "> [!WARNING]\n> Be careful.\n",
+    "raw html block": '<div align="center">\nhi\n</div>\n',
+    "raw html inline": "Text with <b>bold</b> inside.\n",
+    "image": "![alt](img.png)\n",
+}
+
+# Constructs mdformat deliberately normalises. They are listed separately
+# because "unchanged" is the wrong assertion for them — what matters is that
+# the normalisation is stable, since the hash is taken over the canonical form
+# and both revisions of a document go through it.
+NORMALISED = {
+    "setext heading": ("Title\n=====\n", "# Title\n"),
+    "single-tilde strikethrough": ("A ~word~ struck.\n", "A ~~word~~ struck.\n"),
+    "hard break": ("line one  \nline two\n", "line one\\\nline two\n"),
+    "reference link": (
+        "[text][ref]\n\n[ref]: https://example.com\n",
+        "[text](https://example.com)\n",
+    ),
 }
 
 
@@ -61,6 +80,58 @@ def test_canonicalisation_is_idempotent(name):
     """The hash is taken over the canonical form, so it must be a fixed point."""
     once = canonicalise(GFM_CONSTRUCTS[name])
     assert canonicalise(once) == once
+
+
+@pytest.mark.parametrize("name", sorted(NORMALISED))
+def test_normalisation_is_what_we_expect_and_is_stable(name):
+    """Pin the normalisations, so a library upgrade that changes one is visible.
+
+    Every one of these rewrites the source, which is fine — both revisions of a
+    document are canonicalised before hashing, so a normalisation is invisible
+    to the diff as long as it is *stable*. A normalisation that changed between
+    two runs would move every hash in the corpus at once.
+    """
+    src, expected = NORMALISED[name]
+    once = canonicalise(src)
+    assert once == expected
+    assert canonicalise(once) == once
+
+
+def test_an_alert_marker_is_protected_from_translation():
+    """`[!NOTE]` is a keyword, not prose.
+
+    mdformat cannot render markdown-it's dedicated `alert` nodes, so the parser
+    reads alerts as ordinary blockquotes — which leaves the marker sitting in
+    the paragraph's inline content, inside the translation unit. Nothing else
+    in `_placeholders` would protect it, and a model that translates it yields
+    a blockquote that only looks like an alert.
+    """
+    import tree_diff
+    from placeholders import lost_placeholders
+
+    canonical = canonicalise("> [!NOTE]\n> Useful information here.\n")
+    item = next(i for i in tree_diff.plan("", canonical) if i.action == "TRANSLATE")
+
+    assert "[!NOTE]" in item.placeholders
+    assert lost_placeholders(item.new_source, "[!NOTE]\nמידע שימושי", item.placeholders) == []
+    assert lost_placeholders(
+        item.new_source, "[!הערה]\nמידע שימושי", item.placeholders
+    ) == ["[!NOTE]"]
+
+
+def test_an_alert_survives_a_translated_splice():
+    import reassemble
+    import tree_diff
+
+    src = "> [!WARNING]\n> Do not do that.\n"
+    entries = {
+        h: {"source": s, "translation": s.replace("Do not do that.", "אל תעשה זאת"),
+            "prompt_version": "v1"}
+        for h, s in tree_diff.tm_keys(reassemble.canonicalise(src)).items()
+    }
+    out, report = reassemble.render_markdown(src, entries, lang="he")
+    assert out.startswith("> [!WARNING]\n")
+    assert not report.fallbacks
 
 
 def test_a_task_list_is_hashable_and_segmented():

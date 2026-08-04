@@ -27,6 +27,16 @@ def make_parser() -> MarkdownIt:
     # of the two the renderer can read. Hash-neutral: no other construct's
     # token stream changes, so no translation-memory key moves.
     md.options["tasklists"] = False
+    # Same story, different construct: `gfm-like2` parses GitHub alerts
+    # (`> [!NOTE]`) into `alert` / `alert_title` nodes, and mdformat has no
+    # renderer for either — rendering one raises `KeyError: 'alert'`, so a
+    # document containing an alert cannot be canonicalised at all. Off, they
+    # are ordinary blockquotes, which round-trip byte-for-byte and render
+    # identically on GitHub. The `[!NOTE]` marker then sits inside the
+    # paragraph's inline content, so it is part of a translation unit —
+    # `tree_diff._placeholders` protects it. See "The parser configuration is
+    # part of the contract" in `.claude/rules/tree-diff-spec.md`.
+    md.options["alerts"] = False
     md.options["parser_extension"] = []
 
     # 2. Dynamically load EVERY installed mdformat plugin (GFM, tables, frontmatter, etc.)
