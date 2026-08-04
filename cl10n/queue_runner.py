@@ -65,6 +65,8 @@ sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
 import groq  # noqa: E402  (imported for its exception taxonomy — see classify)
 import groq_api  # noqa: E402  (app/, path fixed up above)
 from l10n_store import TranslationMemory, load_queue, save_queue, utc_now  # noqa: E402
+from placeholders import describe as _describe_lost  # noqa: E402
+from placeholders import lost_placeholders  # noqa: E402
 
 TERMINAL_STATES = {"done", "rejected"}
 
@@ -202,29 +204,14 @@ class RateLimitGate:
 def placeholder_gate(source: str, translation: str, placeholders) -> Failure | None:
     """`None` when the translation may enter the TM, a `Failure` when not.
 
-    The rule: every placeholder must occur in the translation at least as many
-    times as in the source, verbatim. "At least" rather than "exactly" because
-    a target language may legitimately repeat a term the source states once;
-    losing one is the failure this gate exists to catch.
+    The rule itself lives in `placeholders.lost_placeholders` because the
+    renderer enforces the same one against the TM entries it splices; this is
+    only the runner's retryable-`Failure` shape wrapped around it.
     """
-    lost = []
-    for ph in dict.fromkeys(p for p in placeholders if p):  # dedup, keep order
-        need = source.count(ph)
-        got = translation.count(ph)
-        if got < need:
-            lost.append(f"placeholder {ph!r} occurs {need}x in source, {got}x in translation")
+    lost = lost_placeholders(source, translation, placeholders)
     if not lost:
         return None
-    return Failure("placeholder_lost", "; ".join(lost), True)
-
-
-def lost_placeholders(source: str, translation: str, placeholders) -> list[str]:
-    """The placeholders the gate would reject — named back to the model on retry."""
-    return [
-        ph
-        for ph in dict.fromkeys(p for p in placeholders if p)
-        if translation.count(ph) < source.count(ph)
-    ]
+    return Failure("placeholder_lost", _describe_lost(source, translation, lost), True)
 
 
 # --------------------------------------------------------------------------

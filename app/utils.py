@@ -5,16 +5,18 @@ import mdformat.plugins
 
 
 
-def markdown_to_ast(raw_markdown) -> str:
-    """
-    Parses Markdown into AST tokens.
+def make_parser() -> MarkdownIt:
+    """A parser configured exactly as the whole pipeline expects it.
+
+    One function because every consumer must agree: the planner hashes what
+    this parses, and reassembly re-parses translated inline content with the
+    *same* rules (`parse_inline` below). Two copies of this setup drifting
+    apart would change token streams under the hashes.
     """
     # 1. Initialize parser and the required plugin list
     md = MarkdownIt("gfm-like2")
     md.options["linkify"] = False
     md.options["parser_extension"] = []
-    
-    
 
     # 2. Dynamically load EVERY installed mdformat plugin (GFM, tables, frontmatter, etc.)
     for plugin in mdformat.plugins.PARSER_EXTENSIONS.values():
@@ -22,28 +24,38 @@ def markdown_to_ast(raw_markdown) -> str:
             md.options["parser_extension"].append(plugin)
             plugin.update_mdit(md)
 
+    return md
+
+
+def markdown_to_ast(raw_markdown) -> str:
+    """
+    Parses Markdown into AST tokens.
+    """
     # 3. Generate the AST tokens
-    tokens = md.parse(raw_markdown)
+    tokens = make_parser().parse(raw_markdown)
     return tokens
+
+
+def parse_inline(text: str) -> list:
+    """Tokenize `text` as *inline* markdown — no block parsing at all.
+
+    Reassembly's splice: a translated segment is inline content by definition,
+    so a translation that happens to start with `- ` or `1. ` must stay one
+    paragraph rather than becoming a list. `parseInline` is what guarantees
+    that; block-parsing the string and picking the inline token out would not.
+    Returns the children of the single `inline` token it produces.
+    """
+    return make_parser().parseInline(text, {})[0].children or []
 
 
 def ast_to_markdown(tokens) -> str:
     """
     Parses Markdown into AST tokens.
     """
-    # 1. Initialize parser and the required plugin list
-    md = MarkdownIt("gfm-like2")
-    md.options["linkify"] = False
-    md.options["parser_extension"] = []
-
-    # 2. Dynamically load EVERY installed mdformat plugin (GFM, tables, frontmatter, etc.)
-    for plugin in mdformat.plugins.PARSER_EXTENSIONS.values():
-        if plugin not in md.options["parser_extension"]:
-            md.options["parser_extension"].append(plugin)
-            plugin.update_mdit(md)
+    md = make_parser()
 
     # 3. Generate the AST tokens
-    
+
     options = dict(md.options)
      #options["mdformat"] = {"wrap": "keep"}
      #options["mdformat"] = {"wrap": 80}
