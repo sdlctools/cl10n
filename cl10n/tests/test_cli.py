@@ -585,6 +585,78 @@ def test_render_records_fallback_hashes_in_the_manifest(small_project):
     assert doomed["source"] in small_project.locale("guide.md")
 
 
+def test_one_language_refused_leaves_the_whole_document_unrecorded(small_project, monkeypatch):
+    """A structure mismatch in one language must not advance the ledger.
+
+    `source_blob`, `doc_hash` and `unit_hashes` are per-*document*. Advancing
+    them because the other language rendered tells the next plan that this
+    revision is localized, and the refused language is then stranded forever:
+    its diff compares the new source against itself, finds pure REUSE, needs no
+    job, and is already listed under `localized` — so `render_required` is
+    False and the stale locale file is never rewritten, with `status` reporting
+    it up to date the whole time.
+    """
+    small_project.plan(langs="he,ru")
+    small_project.run_queue()
+    small_project.render(langs="he,ru")
+    before = small_project.read_json(small_project.manifest)["files"]["md/guide.md"]
+
+    small_project.write("md/guide.md", DOC.replace(
+        "This paragraph explains the second step in some detail.",
+        "This paragraph explains the second step, now revised.",
+    ))
+    small_project.commit("edit the second paragraph")
+    small_project.plan(langs="he,ru")
+    small_project.run_queue()
+
+    # A flag rather than `monkeypatch.undo()`: undo would also revert the
+    # `chdir` the `project` fixture made, and the rest of this test would plan
+    # against the real repository.
+    refused = {"ru"}
+    real = cli.reassemble.render_file
+
+    def maybe_refuse(path, entries, out, *, lang, **kwargs):
+        if lang in refused:
+            raise cli.reassemble.StructureMismatch("simulated: a block moved")
+        return real(path, entries, out, lang=lang, **kwargs)
+
+    monkeypatch.setattr(cli.reassemble, "render_file", maybe_refuse)
+    small_project.render(langs="he,ru", expect=1)
+    refused.clear()
+
+    entry = small_project.read_json(small_project.manifest)["files"]["md/guide.md"]
+    assert entry["source_blob"] == before["source_blob"]
+    assert entry["doc_hash"] == before["doc_hash"]
+
+    # ...so both languages still owe a render, and `status` says so rather than
+    # reporting a document it cannot actually show in Russian.
+    assert small_project.status("--json", langs="he,ru") == 0
+    report = small_project.plan(langs="he,ru")
+    assert report["jobs"] == 0  # nothing to re-translate — this costs no API call
+    assert report["render_required"] is True
+
+    small_project.render(langs="he,ru")
+    assert "now revised" in small_project.locale("guide.md", "ru")
+    assert "now revised" in small_project.locale("guide.md", "he")
+    advanced = small_project.read_json(small_project.manifest)["files"]["md/guide.md"]
+    assert advanced["doc_hash"] != before["doc_hash"]
+
+
+def test_every_language_refused_records_nothing_either(small_project, monkeypatch):
+    small_project.plan()
+    small_project.run_queue()
+
+    def refuse(path, entries, out, *, lang, **kwargs):
+        raise cli.reassemble.StructureMismatch("simulated: a block moved")
+
+    monkeypatch.setattr(cli.reassemble, "render_file", refuse)
+    small_project.render(expect=1)
+
+    assert not os.path.exists(small_project.root / small_project.manifest) or (
+        "md/guide.md" not in small_project.read_json(small_project.manifest)["files"]
+    )
+
+
 def test_render_dry_run_writes_nothing(small_project):
     small_project.plan()
     small_project.run_queue()

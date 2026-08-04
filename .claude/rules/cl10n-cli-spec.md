@@ -74,7 +74,11 @@ fewer misses. Three recovery layers, folded in with `--restore-tm`
 1. `l10n/tm/` committed on the default branch — survives everything;
 2. the open `cl10n/translations` PR branch — finished-but-unmerged runs;
 3. the `cl10n-tm` build artifact, uploaded `if: always()` — what a dying run
-   flushed before it stopped.
+   flushed before it stopped. Reading it back needs `actions: read` in the
+   workflow's `permissions` block: declaring that block zeroes every scope it
+   omits, and without the scope the step 403s and reports "no artifact" —
+   identical to the ordinary first-run case, so the layer looks alive while
+   contributing nothing. The upload keeps working either way.
 
 The Execute step is time-boxed and `continue-on-error`: when it stops early,
 whatever completed still renders and ships in the PR (untranslated units as
@@ -113,6 +117,11 @@ the other documents' translations.
 3. `plan` may write only the TM (RECHECK flags, restores); queue via
    `save_queue`; manifest and locales belong to `render`.
 4. The manifest is written only after files actually rendered — never for a
-   refused (`StructureMismatch`) file, never on `--dry-run`.
+   refused (`StructureMismatch`) file, never on `--dry-run`. **One refused
+   language withholds the whole document's revision**, because `source_blob`
+   and `unit_hashes` are per-document: advancing them for the languages that
+   did render strands the refused one (its next diff sees pure REUSE, needs no
+   job, and is already listed under `localized`, so `render_required` is False
+   for ever while `status` calls it up to date).
 5. Empty TMs are not written; `manifest.py`'s git helpers never raise —
    an unreadable blob means "plan against the empty document", not a crash.

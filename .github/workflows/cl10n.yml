@@ -52,6 +52,15 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  # Layer 3 reads the previous run's crash artifact through the artifacts REST
+  # API, which is gated on the `actions` scope. Declaring a `permissions` block
+  # at all sets every scope not listed here to `none`, so omitting this line
+  # does not fall back to a default — it 403s the recovery step, which then
+  # degrades to "no artifact" and quietly stops contributing. Uploading needs
+  # nothing here (upload-artifact uses the runtime token, not GITHUB_TOKEN),
+  # which is what makes the breakage invisible: the artifact is written every
+  # run and simply never read back.
+  actions: read
 
 env:
   LANGS: he,ru
@@ -103,15 +112,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
+          mkdir -p /tmp/salvage
+          # "No artifact" and "cannot read artifacts" are reported differently
+          # on purpose: they are the same empty result, and collapsing them is
+          # how a dead recovery layer stays invisible for months.
           artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=cl10n-tm&per_page=1" \
-            --jq '.artifacts[0].id' 2>/dev/null)
-          if [ -n "$artifact_id" ] && [ "$artifact_id" != "null" ]; then
-            mkdir -p /tmp/salvage/artifact
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/salvage/tm.zip \
-              && unzip -o -q /tmp/salvage/tm.zip -d /tmp/salvage/artifact \
-              && echo "salvaged artifact ${artifact_id}: $(ls /tmp/salvage/artifact/)"
-          else
+            --jq '[.artifacts[] | select(.expired == false)] | .[0].id // empty' \
+            2>/tmp/salvage/list.err)
+          if [ $? -ne 0 ]; then
+            detail=$(tr -d '\n' < /tmp/salvage/list.err | cut -c1-200)
+            echo "::warning::could not list artifacts — recovery layer 3 unavailable this run (token scope or API error): ${detail}"
+            exit 0
+          fi
+          if [ -z "$artifact_id" ]; then
             echo "no previous cl10n-tm artifact"
+            exit 0
+          fi
+          mkdir -p /tmp/salvage/artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/salvage/tm.zip 2>/tmp/salvage/get.err \
+            && unzip -o -q /tmp/salvage/tm.zip -d /tmp/salvage/artifact
+          if [ $? -eq 0 ]; then
+            echo "salvaged artifact ${artifact_id}: $(ls /tmp/salvage/artifact/)"
+          else
+            echo "::warning::artifact ${artifact_id} could not be downloaded — recovery layer 3 unavailable this run"
+            rmdir /tmp/salvage/artifact 2>/dev/null
           fi
           exit 0
 

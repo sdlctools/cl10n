@@ -436,6 +436,7 @@ def cmd_render(args) -> int:
         doc_hash, unit_hashes, opaque_hashes = manifest_mod.inventory(source_md)
 
         rendered_langs: list[tuple[str, list[str]]] = []
+        refused = False
         for lang in langs:
             out = reassemble.locale_path(path, lang, args.md_root, args.out_dir)
             try:
@@ -447,6 +448,7 @@ def cmd_render(args) -> int:
                 # Not written, not recorded: a manifest entry claiming a
                 # localization whose file was refused is worse than no entry.
                 broken += 1
+                refused = True
                 print(f"STRUCTURE MISMATCH {exc}", file=sys.stderr)
                 continue
             reports.append(report)
@@ -456,7 +458,18 @@ def cmd_render(args) -> int:
                 print(f"  placeholder violation #{violation.unit_hash}: {violation.detail}",
                       file=sys.stderr)
 
-        if args.dry_run or not rendered_langs:
+        # One refused language withholds the *document's* revision, not just its
+        # own: `source_blob` and `unit_hashes` are per-document, so advancing
+        # them on behalf of the languages that did render would tell the next
+        # plan that this revision is localized — the refused language would then
+        # diff the new source against itself, see pure REUSE, and never be
+        # rendered again, while `status` reported it up to date. Leaving the
+        # whole entry behind costs one redundant re-render of the languages that
+        # succeeded (free — no API call) and keeps the ledger honest. Recording
+        # only the successful languages is not an option either: a first-ever
+        # render would then write a file entry with no `source_blob`, which the
+        # manifest schema requires.
+        if args.dry_run or refused or not rendered_langs:
             continue
         manifest_mod.record_revision(
             man, rel,

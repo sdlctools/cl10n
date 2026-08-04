@@ -13,3 +13,4 @@ linkify-it-py
 pytest
 pytest-asyncio
 jsonschema
+pyyaml
