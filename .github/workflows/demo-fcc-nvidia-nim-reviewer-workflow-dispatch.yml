@@ -186,7 +186,7 @@ jobs:
     name: Reviewer skill (Claude)
     needs: check_branch
     if: needs.check_branch.outputs.pr_exists == '1'
-    environment: production
+    # environment: production
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
