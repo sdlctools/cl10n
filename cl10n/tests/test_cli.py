@@ -750,6 +750,45 @@ def test_a_single_file_render_never_collects_garbage(project):
 
 
 # --------------------------------------------------------------------------
+# run — a pass-through, so every argument shape reaches queue_runner intact
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("argv", [
+    ["run", "--dry-run"],
+    ["run", "-n"],
+    ["run", "-c", "2", "--dry-run"],
+    ["run", Project.queue, "--dry-run"],
+    ["run", Project.queue, "-c", "2", "-n"],
+])
+def test_run_passes_every_argument_shape_through(small_project, argv, capsys):
+    """A leading flag must reach the runner rather than this parser.
+
+    `run`'s queue path is optional, so `run --dry-run` is the natural way to
+    ask what a run would cost. argparse's `nargs=REMAINDER` cannot express it —
+    it only begins collecting at the first non-option token — so the flag would
+    be matched against the top-level parser and rejected. Every shape here is a
+    dry run: none of them may reach the provider.
+    """
+    small_project.plan()
+    assert cli.main(argv) == 0
+    assert "3 job(s)" in capsys.readouterr().out
+
+
+def test_run_without_arguments_still_names_the_default_queue(monkeypatch):
+    """Bare `run` is the default queue, checked without executing anything."""
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli.queue_runner, "main", lambda argv: seen.append(argv) or 0)
+
+    assert cli.main(["run"]) == 0
+    assert seen == [[cli.DEFAULT_QUEUE]]
+
+    seen.clear()
+    assert cli.main(["run", "-c", "8"]) == 0
+    assert seen == [[cli.DEFAULT_QUEUE, "-c", "8"]]
+
+
+# --------------------------------------------------------------------------
 # status
 # --------------------------------------------------------------------------
 

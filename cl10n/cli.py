@@ -395,17 +395,27 @@ def cmd_plan(args) -> int:
 # --------------------------------------------------------------------------
 
 
-def cmd_run(args) -> int:
+def run_argv(argv: list[str]) -> int:
     """Delegate verbatim to `queue_runner`.
 
     Not reimplemented and not wrapped: the runner owns concurrency, retries,
     the rate-limit gate and the placeholder gate, and a second copy of its
     argument handling here is a second thing to keep in step.
+
+    `main` routes `run` here *before* argparse sees it, because argparse cannot
+    express "everything after this word belongs to someone else":
+    `nargs=REMAINDER` only starts collecting at the first non-option token, so
+    `run --dry-run` would be matched against this parser and rejected even
+    though the queue path is optional.
     """
-    argv = list(args.runner_args)
+    argv = list(argv)
     if not argv or argv[0].startswith("-"):
         argv.insert(0, DEFAULT_QUEUE)
     return queue_runner.main(argv)
+
+
+def cmd_run(args) -> int:
+    return run_argv(list(args.runner_args))
 
 
 # --------------------------------------------------------------------------
@@ -708,6 +718,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # `run` is a pass-through; its arguments are the runner's, including
+    # `--help`, whose accurate answer is the runner's own. See `run_argv`.
+    if argv and argv[0] == "run":
+        return run_argv(argv[1:])
     args = build_arg_parser().parse_args(argv)
     return args.func(args)
 

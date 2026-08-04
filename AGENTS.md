@@ -144,6 +144,12 @@ The design — why the TM rather than the queue is the resume state, the
 enqueue rule, the workflow's concurrency and secrets decisions — is in
 [`.claude/rules/cl10n-cli-spec.md`](.claude/rules/cl10n-cli-spec.md).
 
+[`cl10n/USERGUIDE.md`](cl10n/USERGUIDE.md) is the long-form companion: every
+flag of every subcommand, real output with the numbers explained, and the
+worked flows — first localization, adding a language, day-to-day updates,
+integrating the pipeline into another project, plus a cookbook and a
+troubleshooting table. Read the spec for *why*, the guide for *how*.
+
 ## tests
 
 ```bash

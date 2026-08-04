@@ -111,7 +111,9 @@ the other documents' translations.
 ## Don't break
 
 1. `run` stays a verbatim delegation to `queue_runner.main` — no second
-   argument surface.
+   argument surface. `main` routes it *before* argparse: `nargs=REMAINDER`
+   only starts collecting at the first non-option token, so a subparser would
+   reject `run --dry-run` while the queue path is documented as optional.
 2. Segmentation comes from `tree_diff`'s private helpers (as in
    `reassemble.py`) — no second definition of "translation unit".
 3. `plan` may write only the TM (RECHECK flags, restores); queue via
