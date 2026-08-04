@@ -1,0 +1,33 @@
+{
+  "schema": "tm/v1",
+  "language": "he",
+  "entries": {
+    "47a762f25907b1f2": {
+      "source": "`<slug>` = short kebab-case summary of the issue title, same style as\nexisting branches in this repo.",
+      "translation": "`<slug>` = תקציר קצר בסגנון kebab-case של כותרת המשימה, באותו סגנון כמו הענפים הקיימים במאגר זה.",
+      "model": "openai/gpt-oss-120b",
+      "prompt_version": "v1",
+      "translated_at": "2026-08-04T12:00:00Z",
+      "review_status": "machine",
+      "action": "TRANSLATE"
+    },
+    "bd6b2a01782d5e5b": {
+      "source": "`<BASE_BRANCH>` — what the PR targets",
+      "translation": "`<BASE_BRANCH>` — היעד שאליו מכוון ה-PR",
+      "model": "openai/gpt-oss-120b",
+      "prompt_version": "v1",
+      "translated_at": "2026-08-04T12:00:00Z",
+      "review_status": "machine",
+      "action": "TRANSLATE"
+    },
+    "d7ef8bbfefd5dd92": {
+      "source": "1. Discovery and healthcheck",
+      "translation": "1. גילוי ובדיקת תקינות",
+      "model": "openai/gpt-oss-120b",
+      "prompt_version": "v1",
+      "translated_at": "2026-08-04T12:00:00Z",
+      "review_status": "machine",
+      "action": "TRANSLATE"
+    }
+  }
+}

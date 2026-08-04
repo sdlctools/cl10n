@@ -37,6 +37,16 @@ and which fields must stay out of the hash — is in
 [`.claude/rules/tree-diff-spec.md`](.claude/rules/tree-diff-spec.md). Read it
 before changing hashing, segmentation, or the similarity thresholds.
 
+## localization pipeline (spec + data contracts)
+
+The full-pipeline architecture — TM lookup, queue, execution, placeholder
+gate, reassembly, render, git policy — is specified in
+[`.claude/rules/l10n-pipeline-spec.md`](.claude/rules/l10n-pipeline-spec.md),
+with the three JSON data contracts (translation memory, queue, manifest) in
+`app/schemas/*.schema.json` and validated worked examples from the real `md/`
+corpus in `app/schemas/examples/`. Pipeline components must implement against
+those schemas.
+
 Not built yet: reassembly (splicing translated `inline` content back into the
 tree and rendering through `ast_to_markdown`).
 
