@@ -146,9 +146,13 @@ enqueue rule, the workflow's concurrency and secrets decisions — is in
 
 [`cl10n/USERGUIDE.md`](cl10n/USERGUIDE.md) is the long-form companion: every
 flag of every subcommand, real output with the numbers explained, and the
-worked flows — first localization, adding a language, day-to-day updates,
-integrating the pipeline into another project, plus a cookbook and a
-troubleshooting table. Read the spec for *why*, the guide for *how*.
+worked flows — first localization, adding a language, day-to-day updates —
+plus a cookbook and a troubleshooting table. Read the spec for *why*, the
+guide for *how*. [`cl10n/INTEGRATION.md`](cl10n/INTEGRATION.md) covers
+vendoring the pipeline into another repository, which has its own failure
+modes: which files to copy (not `cl10n/tests/` — they test *this* repo), what
+committing actually buys, and the one-manifest-per-repository rule that
+silently deletes translations if you invert it.
 
 ## tests
 

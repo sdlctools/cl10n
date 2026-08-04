@@ -119,10 +119,13 @@ EOF
 git add -A && git commit -qm "corpus"
 ```
 
-The corpus must be **committed**. `plan` recovers each document's previously
-localized revision through git, and an uncommitted file has no revision to
-compare against — it still works (everything reads as new), but you lose the
-cheaper `REVISE` path on later edits.
+Commit the corpus. `plan` is happy either way — it compares against the last
+*localized* revision in the manifest, not against your working tree — but
+`render` records `git hash-object` of the file as it sits on disk, and if that
+content was never committed the blob is not in the object database for the next
+run to read. That degrades safely and costs nothing (the memory still covers
+every unit); what it loses is the `REVISE` upgrade on the following edit. See
+[`INTEGRATION.md` §9](INTEGRATION.md#9-why-committing-matters-precisely).
 
 Now plan, pointing at the repo you cloned this pipeline from:
 
@@ -674,102 +677,16 @@ ______________________________________________________________________
 
 ## 10. Flow: integrating a new project
 
-### 10.1 Copy the pipeline in
+Vendoring the pipeline into another repository has its own guide, because it has
+its own failure modes — which files to copy (and which emphatically not to), why
+the upstream test suite does not belong in your project, what committing
+actually buys you, and the manifest rule for a repository with two corpus roots
+that silently deletes translations if you get it backwards.
 
-`cl10n/` depends on three modules from `app/`. Copy both directories:
+**→ [`INTEGRATION.md`](INTEGRATION.md)**
 
-```bash
-mkdir -p newproject/{cl10n,app,md}
-cp -r markdown-localization/cl10n/*.py       newproject/cl10n/
-cp -r markdown-localization/cl10n/tests      newproject/cl10n/
-cp markdown-localization/app/tree_diff.py    newproject/app/
-cp markdown-localization/app/utils.py        newproject/app/
-cp markdown-localization/app/groq_api.py     newproject/app/
-cp markdown-localization/requirements.txt    newproject/
-```
-
-`app/tree_diff.py` is the change-detection engine, `app/utils.py` the
-canonicalisation round-trip every hash is taken over, and `app/groq_api.py` the
-provider client and prompt. Nothing else in `app/` is needed.
-
-### 10.2 Wire up the project
-
-```bash
-cd newproject
-python3 -m venv venv && venv/bin/pip install -r requirements.txt
-
-cat >> .gitignore <<'EOF'
-venv/
-__pycache__/
-l10n/queue/
-groq_creds.txt
-EOF
-
-git init -q && git add -A && git commit -qm "add localization pipeline"
-```
-
-Put your Markdown under `md/`, or keep it where it is and pass `--md-root docs`
-to every command. Commit it before the first `plan`.
-
-### 10.3 First localization
-
-```bash
-echo 'GROQ_API_KEY="gsk_..."' > groq_creds.txt
-
-venv/bin/python3 cl10n/cli.py status --langs he      # everything at 0%
-venv/bin/python3 cl10n/cli.py plan   --langs he
-venv/bin/python3 cl10n/cli.py run    --dry-run       # check the bill first
-venv/bin/python3 cl10n/cli.py run    -c 8
-venv/bin/python3 cl10n/cli.py render --langs he
-venv/bin/python3 cl10n/cli.py status --langs he      # should read 100%
-
-git add locales l10n/tm l10n/manifest.json
-git commit -m "l10n: first Hebrew localization"
-```
-
-Spot-check one rendered file before trusting the rest. Confirm that code fences
-are unchanged, links still resolve, and tables still have their original number
-of columns.
-
-### 10.4 Automate it
-
-Copy `.github/workflows/cl10n.yml` and change four things:
-
-| Setting | Where | Change to |
-| --- | --- | --- |
-| trigger branch | `on.push.branches` | your default branch |
-| watched paths | `on.push.paths` | your corpus, e.g. `docs/**` |
-| languages | `env.LANGS` | your language list |
-| corpus root | the `plan`/`render`/`status` steps | add `--md-root docs` if not `md` |
-
-Then add `GROQ_API_KEY` as a repository secret (Settings → Secrets and variables
-→ Actions). Leave these alone unless you know why you are changing them:
-
-- `permissions.actions: read` — the crash-artifact recovery needs it, and
-  declaring a `permissions` block sets every scope you *don't* list to `none`.
-  Drop it and recovery silently stops working while still logging success.
-- `concurrency: {group: cl10n, cancel-in-progress: false}` — two rapid pushes
-  must queue, not race for the memory files.
-- no `pull_request` trigger — fork code must never execute where the key is.
-
-Trigger it once with **workflow_dispatch** before relying on the push trigger,
-so the first run is one you are watching.
-
-### 10.5 A different corpus layout
-
-Nothing requires `md/`. For a docs site:
-
-```bash
-venv/bin/python3 cl10n/cli.py plan   --md-root docs --out-dir i18n --langs fr
-venv/bin/python3 cl10n/cli.py render --md-root docs --out-dir i18n --langs fr
-```
-
-`docs/guide/intro.md` renders to `i18n/fr/guide/intro.md`. Pass the same
-`--md-root` and `--out-dir` to *every* command in the cycle — `status` looks for
-rendered files at the path `render` would have written, and disagreeing flags
-make it report everything as `[not rendered]`.
-
-______________________________________________________________________
+It was written by following it from an empty directory to a working Hebrew
+localization against the live provider, so every transcript in it is real.
 
 ## 11. Cookbook
 
