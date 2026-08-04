@@ -333,7 +333,8 @@ other can resume. Normative requirements:
 - **Reassembly internals** (splicing translated inline content into the tree
   and rendering via `ast_to_markdown`) — its *contract* is fixed here (§1
   steps 10–11, COPY semantics in §2, fallback in §5), but its implementation
-  belongs to the runtime sub-tasks.
+  belongs to the runtime sub-tasks. Built: `cl10n/reassemble.py`, designed in
+  [`cl10n-reassembly-spec.md`](cl10n-reassembly-spec.md).
 - `demos/localize.py` is a discarded prototype of the queue/lockfile/render
   trio — intent only; its parser and renderer are both wrong by this spec
   (naive block parsing, fabricated structure instead of AST round-trip).

@@ -215,8 +215,12 @@ cells diff independently.
 - [`tm_keys`](../../app/tree_diff.py) — the O(n) shortcut: `{unit_hash: source}` for a
   document.
 
-## Not built yet
+## Downstream
 
 **Reassembly** — splicing translated `inline` content back into the tree and
-rendering via the existing `ast_to_markdown`. That is the step where the
-placeholder round-trip check pays off.
+rendering via the existing `ast_to_markdown` — is `cl10n/reassemble.py`
+([`cl10n-reassembly-spec.md`](cl10n-reassembly-spec.md)). It is where the
+placeholder round-trip check pays off, and it consumes this module's unit
+segmentation directly (`_units_under`, `_unit_source`, `_placeholders`,
+`_opaque_under`) rather than re-deriving it — renaming one of those breaks
+that import on purpose.
