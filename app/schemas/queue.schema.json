@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kantorv/markdown-localization/app/schemas/queue.schema.json",
+  "title": "Translation queue (run artifact: l10n/queue/queue.json — never committed)",
+  "description": "Ordered set of LLM jobs for one run. Resumption is derived from this file alone. See .claude/rules/l10n-pipeline-spec.md §4.",
+  "type": "object",
+  "required": ["schema", "run_id", "created_at", "source_commit", "jobs"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "queue/v1",
+      "description": "Format discriminator; bump on breaking change."
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^\\d{8}T\\d{6}Z-[0-9a-f]{6}$",
+      "description": "UTC compact timestamp + 6 random hex chars, e.g. 20260804T120000Z-3f9c21."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "description": "ISO 8601 UTC, second precision."
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "description": "Git commit of md/ the plan was computed from."
+    },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/job"
+      }
+    }
+  },
+  "$defs": {
+    "job": {
+      "type": "object",
+      "required": [
+        "id",
+        "unit_hash",
+        "lang",
+        "action",
+        "source",
+        "context",
+        "placeholders",
+        "old_source",
+        "prior_translation",
+        "state",
+        "attempts",
+        "max_attempts",
+        "error",
+        "started_at",
+        "finished_at"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(-[A-Za-z]{2,8})?:[0-9a-f]{16}$",
+          "description": "\"<lang>:<unit_hash>\" — unique within a queue (jobs are deduplicated by (lang, unit_hash) across documents)."
+        },
+        "unit_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "tree_diff.hash_tree hash of the unit's canonical source — the TM key this job's result is written under."
+        },
+        "lang": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(-[A-Za-z]{2,8})?$"
+        },
+        "action": {
+          "enum": ["TRANSLATE", "REVISE"],
+          "description": "Only the two API-calling tree_diff actions become jobs (spec §2)."
+        },
+        "source": {
+          "type": "string",
+          "description": "Canonical source text to translate."
+        },
+        "context": {
+          "type": "string",
+          "description": "Heading-trail context from tree_diff — read-only context for the prompt; empty string when the unit precedes any heading."
+        },
+        "placeholders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Inline spans that must survive translation verbatim; validated by the placeholder gate (spec §5)."
+        },
+        "old_source": {
+          "type": ["string", "null"],
+          "description": "REVISE only: the previous source text. null for TRANSLATE."
+        },
+        "prior_translation": {
+          "type": ["string", "null"],
+          "description": "REVISE only: the existing translation being revised. null for TRANSLATE."
+        },
+        "state": {
+          "enum": ["pending", "in_flight", "done", "failed", "rejected"],
+          "description": "Terminal: done, rejected. Legal transitions in spec §4 — pending→in_flight, pending→done (TM shortcut), in_flight→done|failed, failed→in_flight|rejected, restart rewrites in_flight→pending."
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Completed attempts so far (incremented on in_flight→failed)."
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "attempts == max_attempts on a failed job forces failed→rejected."
+        },
+        "error": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/error"
+            }
+          ],
+          "description": "Last failure, kept until the job succeeds or is rejected. null when never failed or after success."
+        },
+        "started_at": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+          "description": "First pending→in_flight transition. null while pending."
+        },
+        "finished_at": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+          "description": "Transition into a terminal state. null while non-terminal."
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["kind", "detail", "at"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["rate_limit", "network", "api_error", "placeholder_lost"],
+          "description": "rate_limit = HTTP 429; network = transient connectivity; api_error = any other provider error; placeholder_lost = failed the placeholder gate (spec §5)."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Human-readable detail; for placeholder_lost, names the lost placeholder(s) and their source/translation occurrence counts."
+        },
+        "at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        }
+      }
+    }
+  }
+}

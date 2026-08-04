@@ -4,3 +4,7 @@ venv/
 __pycache__/
 *.py[codz]
 *$py.class
+
+# l10n run artifacts — queue files are per-run state, never committed
+# (.claude/rules/l10n-pipeline-spec.md §6)
+l10n/queue/
