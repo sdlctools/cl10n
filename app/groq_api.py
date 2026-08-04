@@ -4,10 +4,18 @@ import asyncio
 from typing import List, Dict, Any
 from groq import AsyncGroq
 
-# Initialize the Groq client
-client = AsyncGroq(
-    api_key=os.environ.get("GROQ_API_KEY"),  # Set your API key in environment variables
-)
+# The Groq client is built on first use, not at import: AsyncGroq raises when
+# GROQ_API_KEY is unset, which would make this module unimportable on a machine
+# without credentials — including CI, where the runner's tests stub the provider
+# and must never need a live key.
+_client: AsyncGroq | None = None
+
+
+def get_client() -> AsyncGroq:
+    global _client
+    if _client is None:
+        _client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
+    return _client
 
 # Your translation prompt template
 TRANSLATION_PROMPT = """You are an expert technical document translator. Your task is to translate natural language prose blocks into target languages while strictly preserving all technical syntax, formatting, and variables.
@@ -27,12 +35,23 @@ Translate the following English text into {target_lang}:
 {text_to_translate}
 """
 
+# Version of TRANSLATION_PROMPT above, recorded on every translation memory
+# entry (spec §3). Bump it when the CRITICAL RULES change — that is what makes
+# older entries eligible for a refresh run. Per-job framing the runner wraps
+# around this template (heading-trail context, the REVISE pair, the corrective
+# retry instruction) is payload, not rules, and does not bump this.
+PROMPT_VERSION = "v1"
+
+# Default model for the prompt above.
+DEFAULT_MODEL = "openai/gpt-oss-120b"
+
 # Language name mapping for prompts
 LANG_NAMES = {
     "es": "Spanish",
     "ja": "Japanese",
     "he": "Hebrew",
-    "cn": "Chinese (Simplified)"
+    "cn": "Chinese (Simplified)",
+    "ru": "Russian",
 }
 
 async def translate_text(text: str, target_lang: str) -> str:
@@ -49,8 +68,8 @@ async def translate_text(text: str, target_lang: str) -> str:
     lang_name = LANG_NAMES.get(target_lang, target_lang)
     
     try:
-        completion = await client.chat.completions.create(
-            model="openai/gpt-oss-120b",  # Best for translation tasks
+        completion = await get_client().chat.completions.create(
+            model=DEFAULT_MODEL,  # Best for translation tasks
             messages=[
                 {
                     "role": "user",
