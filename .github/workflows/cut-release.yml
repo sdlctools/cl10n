@@ -96,6 +96,19 @@ jobs:
             exit 1
           fi
           git checkout -b "${branch}" origin/development
+          # Cut marker commit — REQUIRED, not cosmetic. `development`'s tip is
+          # normally tag-development-rc.yml's "chore(dev): X.Y.Z-dev.N [skip
+          # ci]" stamp, and a branch cut straight off it inherits that message
+          # as its own tip. GitHub reads the skip marker off the HEAD commit of
+          # a pull_request event, so merging such a release PR into main emits
+          # NO workflow runs at all and release.yml never fires — no tag, no
+          # GitHub Release, no back-merge (this is exactly how v0.1.0 ended up
+          # tagged by hand). One commit on top clears the marker. It also
+          # guarantees a non-empty diff vs main, so `gh pr create` below cannot
+          # fail with "No commits between ...".
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: cut ${branch}"
           git push -u origin "${branch}"
           echo "::notice::Created ${branch} from development"
           echo "branch=${branch}" >> "$GITHUB_OUTPUT"
