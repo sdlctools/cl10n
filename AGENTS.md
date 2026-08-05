@@ -285,6 +285,14 @@ Gitflow across three long-lived surfaces: `development` (default branch),
 are also valid PEP 440 versions once the leading `v` is stripped — that's
 what `pyproject.toml`'s `version` field holds.
 
+The flow below is the happy path.
+[`.claude/rules/release-pipeline.md`](.claude/rules/release-pipeline.md) has
+the mechanics under it — the two tag shapes and why every version query
+filters to plain ones, the invariants that keep the chain firing (chief
+among them: the release branch's tip commit must not carry a CI skip
+marker), and a failure-mode table. Read it before changing anything under
+`.github/workflows/` or diagnosing a release that did not happen.
+
 Normal release flow:
 
 1. Dispatch `.github/workflows/cut-release.yml` manually, choosing a bump

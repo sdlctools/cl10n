@@ -96,6 +96,15 @@ jobs:
           # [skip ci] — this push lands back on `development`, the branch
           # that triggers this very workflow; without it, every dev build
           # would re-trigger itself.
+          #
+          # Blast radius: the marker stays in the message of `development`'s
+          # tip commit, and GitHub reads it off the HEAD commit of any later
+          # event on a branch cut from here — a release branch cut with no
+          # commits of its own inherits it verbatim, and its merge into main
+          # then produces no workflow runs at all (no release.yml, no checks).
+          # cut-release.yml adds a marker-clearing commit on the cut branch for
+          # exactly that reason; do not drop it there without dropping
+          # [skip ci] here. See .claude/rules/release-pipeline.md.
           git commit -m "chore(dev): ${DEV_VERSION} [skip ci]"
 
           git push origin development
