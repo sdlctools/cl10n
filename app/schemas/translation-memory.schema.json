@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kantorv/markdown-localization/app/schemas/translation-memory.schema.json",
+  "title": "Translation memory (one file per language: l10n/tm/<lang>.json)",
+  "description": "Keyed by translation-unit hash as produced by tree_diff.hash_tree. See .claude/rules/l10n-pipeline-spec.md §3.",
+  "type": "object",
+  "required": ["schema", "language", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "tm/v1",
+      "description": "Format discriminator; bump on breaking change."
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2}(-[A-Za-z]{2,8})?$",
+      "description": "BCP-47-style language code this file holds translations for (he, ru)."
+    },
+    "entries": {
+      "type": "object",
+      "description": "Map of unit hash to entry. Serialize with sorted keys for deterministic diffs.",
+      "propertyNames": {
+        "pattern": "^[0-9a-f]{16}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": [
+        "source",
+        "translation",
+        "model",
+        "prompt_version",
+        "translated_at",
+        "review_status",
+        "action"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Canonical source text (the inline markdown source of the unit) this translation was made from. The entry's key is tree_diff's hash of this text."
+        },
+        "translation": {
+          "type": "string",
+          "description": "Translated text; every placeholder present in source survives verbatim (spec §5)."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model identifier that produced the translation, e.g. openai/gpt-oss-120b."
+        },
+        "prompt_version": {
+          "type": "string",
+          "description": "Version of the translation prompt (app/groq_api.py TRANSLATION_PROMPT) in force when translated, e.g. \"v1\". Older than current ⇒ eligible for a refresh run."
+        },
+        "translated_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+          "description": "ISO 8601 UTC, second precision."
+        },
+        "review_status": {
+          "enum": ["machine", "recheck", "approved"],
+          "description": "machine = fresh from the model; recheck = content moved, context may have changed (RECHECK action); approved = human-reviewed."
+        },
+        "action": {
+          "enum": ["TRANSLATE", "REVISE"],
+          "description": "Provenance: produced fresh, or as a revision of a prior translation."
+        }
+      }
+    }
+  }
+}

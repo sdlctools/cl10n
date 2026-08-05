@@ -119,6 +119,58 @@ Deliberately excluded from the hash:
 
 Including either would make every diff document-wide dirty.
 
+### The parser configuration is part of the contract
+
+`utils.make_parser` is the single parser every stage shares, and two of its
+options are switched **off** against the `gfm-like2` preset's defaults. Both
+for the same reason: markdown-it-py grew a native implementation of a
+construct that mdformat cannot render, and a construct that cannot be rendered
+cannot be canonicalised, hashed, planned or localized — it raises.
+
+| Option | Off because |
+| --- | --- |
+| `tasklists` | native parsing marks the item `task-list-item` but emits no checkbox token; `mdformat_gfm`'s list renderer reads that class and asserts on the checkbox only `mdit_py_plugins.tasklists` produces. Off, that plugin — which `mdformat_gfm` installs anyway — owns task lists, and the renderer finds what it expects |
+| `alerts` | `> [!NOTE]` parses into `alert` / `alert_title` nodes and mdformat has a renderer for neither: `KeyError: 'alert'`. Off, alerts are ordinary blockquotes, which round-trip byte-for-byte and render identically on GitHub |
+
+Turning `alerts` off puts the `[!NOTE]` marker inside the paragraph's inline
+content, so it lands in a translation unit and a model may translate it,
+producing a blockquote that only looks like an alert. `_placeholders` therefore
+protects the five GitHub alert keywords, which costs nothing and makes a
+translated marker a gate failure — a retry, then an English fallback — rather
+than a silent downgrade. Doing better would mean teaching mdformat to render
+`alert` nodes; until then this is the honest trade.
+
+Both switches are **hash-neutral**: no other construct's token stream changes,
+verified byte-for-byte over the corpus. Anything that alters this parser is a
+corpus-wide rehash, so `cl10n/tests/test_canonicalise.py` pins the constructs
+and their normalisations.
+
+### Detecting the next one automatically
+
+Both breakages arrived the same way: an unpinned minor upgrade taught
+markdown-it-py to parse something mdformat cannot render. So the parsing stack
+is now **pinned exactly** in `requirements.txt`, and
+[`cl10n/compat_check.py`](../../cl10n/compat_check.py) is the gate for moving a
+pin:
+
+```bash
+venv/bin/python3 cl10n/compat_check.py            # verify
+venv/bin/python3 cl10n/compat_check.py --update   # re-record, then read the diff
+```
+
+It compares three things against `cl10n/compat-baseline.json`, cheapest signal
+first: the parser's **option surface** (a preset gaining an option is visible
+before any document triggers it — this alone would have caught `alerts`), its
+**renderable node types** (the crash class), and the **canonical form and unit
+hashes** of `cl10n/tests/fixtures/kitchen-sink.md` (the silent class, where
+nothing raises and the whole corpus quietly rehashes).
+
+`.github/workflows/checks.yml` runs it on every push and pull request against
+the pinned stack, and weekly against the *latest* releases — so an upstream
+change is reported while the pins are still protecting us, rather than on the
+afternoon somebody bumps one. A version bump on its own is context, never a
+finding; only a behaviour change fails.
+
 ## Pipeline
 
 ```
@@ -215,8 +267,12 @@ cells diff independently.
 - [`tm_keys`](../../app/tree_diff.py) — the O(n) shortcut: `{unit_hash: source}` for a
   document.
 
-## Not built yet
+## Downstream
 
 **Reassembly** — splicing translated `inline` content back into the tree and
-rendering via the existing `ast_to_markdown`. That is the step where the
-placeholder round-trip check pays off.
+rendering via the existing `ast_to_markdown` — is `cl10n/reassemble.py`
+([`cl10n-reassembly-spec.md`](cl10n-reassembly-spec.md)). It is where the
+placeholder round-trip check pays off, and it consumes this module's unit
+segmentation directly (`_units_under`, `_unit_source`, `_placeholders`,
+`_opaque_under`) rather than re-deriving it — renaming one of those breaks
+that import on purpose.

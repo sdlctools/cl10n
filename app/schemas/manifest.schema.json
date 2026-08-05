@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kantorv/markdown-localization/app/schemas/manifest.schema.json",
+  "title": "Localization manifest (committed: l10n/manifest.json)",
+  "description": "Per-document ledger: last-localized revision, unit inventory (RETIRE GC reference counts), per-language completion. See .claude/rules/l10n-pipeline-spec.md §6.",
+  "type": "object",
+  "required": ["schema", "languages", "files"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "manifest/v1",
+      "description": "Format discriminator; bump on breaking change."
+    },
+    "languages": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z]{2}(-[A-Za-z]{2,8})?$"
+      },
+      "minItems": 1,
+      "description": "Target languages of the pipeline (he, ru)."
+    },
+    "files": {
+      "type": "object",
+      "description": "Keyed by repo-relative source path under md/. Serialize with sorted keys.",
+      "propertyNames": {
+        "pattern": "^md/.+\\.md$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/file"
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "required": ["source_blob", "doc_hash", "unit_hashes", "opaque_hashes", "localized"],
+      "additionalProperties": false,
+      "properties": {
+        "source_blob": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Git blob SHA of the last-localized source revision; step 3 recovers the old markdown via `git show <blob>`. Unreachable blob ⇒ plan against the empty document (degenerate case, spec §1)."
+        },
+        "doc_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "Merkle root of the canonicalized document (tree_diff.hash_tree on the root node) — cheap whole-document change check."
+        },
+        "unit_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "description": "Ordered unit hashes at the last-localized revision (document order). Reference counts for RETIRE garbage collection: a TM entry is deleted only when no file lists its hash."
+        },
+        "opaque_hashes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "description": "Hashes of opaque blocks (fence / code_block / html_block / front_matter / hr) at the last-localized revision. Never in the TM; listed for change accounting."
+        },
+        "localized": {
+          "type": "object",
+          "description": "Per-language completion state; a language absent here has never completed a run for this file.",
+          "propertyNames": {
+            "pattern": "^[a-z]{2}(-[A-Za-z]{2,8})?$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/completion"
+          }
+        }
+      }
+    },
+    "completion": {
+      "type": "object",
+      "required": ["run_id", "completed_at", "fallbacks"],
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "pattern": "^\\d{8}T\\d{6}Z-[0-9a-f]{6}$",
+          "description": "The run that produced the currently committed locales/<lang> rendering of this file."
+        },
+        "completed_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        },
+        "fallbacks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "description": "Unit hashes rendered as English source because their job ended rejected (spec §5). Empty when fully localized."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,243 @@
+# Continuous localization — md/** → locales/<lang>/** as a pull request.
+#
+# Design decisions this file encodes (JST-265):
+#
+# TRIGGER (AC2): push to the default branch, filtered to the watched corpus —
+# a push that touches no Markdown under md/ starts nothing. workflow_dispatch
+# exists to resume an interrupted run without pushing a dummy commit.
+#
+# INCOMPLETE RUNS (AC4): a translation run is hundreds of rate-limited API
+# calls; this workflow assumes it can die at any point. The resume state is
+# the TRANSLATION MEMORY, not the queue: `plan` re-derives the queue from the
+# committed TM + manifest, so `done` work is never re-billed and lost work is
+# always re-planned. Three layers, cheapest first:
+#   1. l10n/tm/ committed on the default branch — survives everything;
+#   2. the open localization PR branch — holds finished-but-unmerged runs;
+#   3. the cl10n-tm build artifact, uploaded even on failure — holds what a
+#      *dying* run managed to flush before it stopped.
+# Layers 2 and 3 are folded in with `plan --restore-tm` (committed entries
+# always win). The run step itself is time-boxed and continue-on-error: when
+# it stops early, whatever completed still renders and ships in the PR, with
+# the remainder marked "resumes next run" in the body. Nothing is lost, and
+# `(lang, unit_hash)`-keyed idempotent TM upserts mean nothing is ever
+# translated twice.
+#
+# OUTPUT (AC3): always a pull request, never a push to the default branch.
+# One fixed branch (cl10n/translations) force-updated per run, so successive
+# runs update the same PR instead of stacking new ones.
+#
+# CONCURRENCY (AC5): one group, cancel-in-progress: false — two rapid pushes
+# queue the second run behind the first rather than racing it for the TM
+# files. GitHub additionally collapses a queued backlog to the newest run.
+#
+# SECRETS (AC6): GROQ_API_KEY is exposed to exactly one step (Execute), which
+# talks only to the provider and prints job ids, never request contents. The
+# workflow runs on `push` to the default branch and on manual dispatch only —
+# it has no pull_request/pull_request_target trigger, so code from a fork can
+# never execute in a context that holds the secret.
+
+name: cl10n
+
+on:
+  push:
+    branches: [development]
+    paths:
+      - "md/**"
+  workflow_dispatch: {}
+
+concurrency:
+  group: cl10n
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  # Layer 3 reads the previous run's crash artifact through the artifacts REST
+  # API, which is gated on the `actions` scope. Declaring a `permissions` block
+  # at all sets every scope not listed here to `none`, so omitting this line
+  # does not fall back to a default — it 403s the recovery step, which then
+  # degrades to "no artifact" and quietly stops contributing. Uploading needs
+  # nothing here (upload-artifact uses the runtime token, not GITHUB_TOKEN),
+  # which is what makes the breakage invisible: the artifact is written every
+  # run and simply never read back.
+  actions: read
+
+env:
+  LANGS: he,ru
+  PR_BRANCH: cl10n/translations
+  QUEUE: l10n/queue/queue.json
+
+jobs:
+  localize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: `plan` recovers each document's previous revision
+          # via `git cat-file blob <manifest.source_blob>`. A shallow clone
+          # degrades safely (plan against the empty document, TM still
+          # deduplicates) but wastes REVISE context — so don't be shallow.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Recover state from the open localization PR branch
+        # Layer 2: a finished run whose PR nobody merged yet. Its TM is real,
+        # paid-for work that is not on the default branch — fold it in.
+        run: |
+          if git rev-parse --verify --quiet "origin/${PR_BRANCH}" >/dev/null; then
+            mkdir -p /tmp/salvage/pr-branch
+            git archive "origin/${PR_BRANCH}" l10n/tm 2>/dev/null \
+              | tar -x --strip-components=2 -C /tmp/salvage/pr-branch || true
+            echo "salvaged from origin/${PR_BRANCH}: $(ls /tmp/salvage/pr-branch/ 2>/dev/null || echo nothing)"
+          else
+            echo "no open localization branch"
+          fi
+
+      - name: Recover state from the previous run's artifact
+        # Layer 3: what a killed run flushed before dying. Best-effort — a
+        # missing or expired artifact is normal, not an error.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          mkdir -p /tmp/salvage
+          # "No artifact" and "cannot read artifacts" are reported differently
+          # on purpose: they are the same empty result, and collapsing them is
+          # how a dead recovery layer stays invisible for months.
+          artifact_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=cl10n-tm&per_page=1" \
+            --jq '[.artifacts[] | select(.expired == false)] | .[0].id // empty' \
+            2>/tmp/salvage/list.err)
+          if [ $? -ne 0 ]; then
+            detail=$(tr -d '\n' < /tmp/salvage/list.err | cut -c1-200)
+            echo "::warning::could not list artifacts — recovery layer 3 unavailable this run (token scope or API error): ${detail}"
+            exit 0
+          fi
+          if [ -z "$artifact_id" ]; then
+            echo "no previous cl10n-tm artifact"
+            exit 0
+          fi
+          mkdir -p /tmp/salvage/artifact
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > /tmp/salvage/tm.zip 2>/tmp/salvage/get.err \
+            && unzip -o -q /tmp/salvage/tm.zip -d /tmp/salvage/artifact
+          if [ $? -eq 0 ]; then
+            echo "salvaged artifact ${artifact_id}: $(ls /tmp/salvage/artifact/)"
+          else
+            echo "::warning::artifact ${artifact_id} could not be downloaded — recovery layer 3 unavailable this run"
+            rmdir /tmp/salvage/artifact 2>/dev/null
+          fi
+          exit 0
+
+      - name: Plan
+        id: plan
+        run: |
+          restore_flags=""
+          for dir in /tmp/salvage/pr-branch /tmp/salvage/artifact; do
+            [ -d "$dir" ] && restore_flags="$restore_flags --restore-tm $dir"
+          done
+          venv/bin/python3 cl10n/cli.py plan --langs "$LANGS" \
+            -o "$QUEUE" --report /tmp/plan-report.json $restore_flags
+          jobs=$(venv/bin/python3 -c "import json; print(json.load(open('/tmp/plan-report.json'))['jobs'])")
+          render=$(venv/bin/python3 -c "import json; print(str(json.load(open('/tmp/plan-report.json'))['render_required']).lower())")
+          echo "jobs=$jobs" >> "$GITHUB_OUTPUT"
+          echo "render_required=$render" >> "$GITHUB_OUTPUT"
+
+      - name: Nothing to do
+        if: steps.plan.outputs.jobs == '0' && steps.plan.outputs.render_required == 'false'
+        run: echo "Corpus fully localized at this revision — no PR needed."
+
+      - name: Execute the queue
+        # Time-boxed and continue-on-error BY DESIGN: when the provider
+        # throttles a big queue past the box, the step stops, and everything
+        # after it still runs — partial results render, ship, and the next run
+        # resumes from the committed + salvaged memory. The non-zero exit for
+        # rejected jobs is likewise not a workflow failure: rejected units
+        # render as English fallbacks and are re-planned next run.
+        id: run
+        if: steps.plan.outputs.jobs != '0'
+        continue-on-error: true
+        timeout-minutes: 150
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: venv/bin/python3 cl10n/cli.py run "$QUEUE" -c 8
+
+      - name: Upload the translation memory as a crash artifact
+        # Runs even when Execute failed or timed out — this is layer 3 for the
+        # NEXT run. The TM is flushed to disk on every job transition, so
+        # whatever is here is valid, complete-per-entry work.
+        if: always() && steps.plan.outputs.jobs != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cl10n-tm
+          path: l10n/tm/
+          retention-days: 14
+          if-no-files-found: ignore
+          overwrite: true
+
+      - name: Render
+        id: render
+        if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
+        continue-on-error: true
+        run: |
+          venv/bin/python3 cl10n/cli.py render --langs "$LANGS" \
+            --queue "$QUEUE" --report /tmp/render-report.json
+
+      - name: Status
+        if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
+        run: venv/bin/python3 cl10n/cli.py status --langs "$LANGS" || true
+
+      - name: Open or update the pull request
+        if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "cl10n-bot"
+          git config user.email "cl10n-bot@users.noreply.github.com"
+
+          git checkout -B "$PR_BRANCH"
+          for path in locales l10n/tm l10n/manifest.json; do
+            [ -e "$path" ] && git add -A -- "$path"
+          done
+          if git diff --cached --quiet; then
+            echo "No rendered changes to propose."
+            exit 0
+          fi
+          git commit -m "cl10n: localization run for ${GITHUB_SHA::12}"
+          # Force: the branch is regenerated from the current default branch +
+          # the full recovered state each run, so its old tip is always
+          # subsumed. The PR (if open) follows the branch.
+          git push --force origin "$PR_BRANCH"
+
+          venv/bin/python3 cl10n/ci_report.py \
+            --plan /tmp/plan-report.json --queue "$QUEUE" \
+            --render /tmp/render-report.json -o /tmp/pr-body.md
+
+          existing=$(gh pr list --head "$PR_BRANCH" --base "${GITHUB_REF_NAME}" \
+            --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh pr edit "$existing" --body-file /tmp/pr-body.md
+            echo "updated PR #$existing"
+          else
+            gh pr create --base "${GITHUB_REF_NAME}" --head "$PR_BRANCH" \
+              --title "cl10n: update translations" \
+              --body-file /tmp/pr-body.md
+          fi
+
+      - name: Fail the workflow if the run left placeholder violations
+        # Deferred to the end so a violation never blocks the PR from carrying
+        # everything that DID pass — but the red X still demands a human look.
+        if: steps.render.outcome == 'failure'
+        run: |
+          echo "::error::render exited non-zero (placeholder violation or structure mismatch) — see the Render step"
+          exit 1

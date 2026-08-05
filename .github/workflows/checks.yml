@@ -1,0 +1,116 @@
+# Tests, and the markdown-it-py / mdformat drift detector.
+#
+# Two jobs with deliberately different jobs to do:
+#
+# `tests` is the gate. It installs the PINNED stack from requirements.txt and
+# runs the suite, including the compatibility check against the recorded
+# baseline. Red here means this change breaks the pipeline.
+#
+# `compat-latest` is the early warning. It installs the newest releases of the
+# five packages the hashing contract depends on, ignoring the pins, and runs
+# only the drift detector. Red here means *an upgrade you have not taken yet*
+# would break the pipeline — which is exactly when you want to find out, rather
+# than on the afternoon someone bumps a pin. It is `continue-on-error` because
+# a third party publishing a release is not this repository being broken; it
+# reports through the job summary instead of failing the run.
+#
+# The schedule is what makes the second job worth having: drift arrives when an
+# upstream maintainer ships, not when we push.
+
+name: checks
+
+on:
+  push:
+    branches: [development]
+  pull_request:
+  schedule:
+    # Mondays, 06:00 UTC — a week's worth of upstream releases at a time.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the pinned stack
+        run: |
+          python -m venv venv
+          venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Compatibility baseline
+        # Ahead of the suite: when the parser contract has moved, every other
+        # failure is downstream noise and this one line is the diagnosis.
+        run: venv/bin/python3 cl10n/compat_check.py
+
+      - name: Tests
+        run: venv/bin/python3 -m pytest -q
+
+  compat-latest:
+    # Early warning against releases nobody has adopted yet. Never blocks.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the latest parsing stack, ignoring the pins
+        id: install
+        run: |
+          python -m venv venv
+          venv/bin/pip install --quiet --upgrade \
+            markdown-it-py mdit-py-plugins mdformat mdformat-gfm \
+            mdformat-frontmatter linkify-it-py
+          venv/bin/pip list --format=freeze \
+            | grep -iE '^(markdown-it-py|mdit-py-plugins|mdformat|mdformat-gfm|mdformat[-_]frontmatter|linkify-it-py)=' \
+            > /tmp/latest.txt || true
+          cat /tmp/latest.txt
+
+      - name: Drift detector against the latest releases
+        id: drift
+        run: |
+          if venv/bin/python3 cl10n/compat_check.py > /tmp/compat.txt 2>&1; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=drift" >> "$GITHUB_OUTPUT"
+          fi
+          cat /tmp/compat.txt
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            if [ "${{ steps.drift.outputs.status }}" = "clean" ]; then
+              echo "## Upstream compatibility: clean"
+              echo "The newest releases agree with the recorded baseline — the pins in"
+              echo "\`requirements.txt\` can be moved forward when convenient."
+            else
+              echo "## Upstream compatibility: DRIFT"
+              echo "The newest releases disagree with the recorded baseline. The pins in"
+              echo "\`requirements.txt\` are protecting the pipeline right now — do not"
+              echo "move them until the findings below are resolved."
+            fi
+            echo
+            echo '### Versions tested'
+            echo '```'; cat /tmp/latest.txt 2>/dev/null || echo '(unavailable)'; echo '```'
+            echo '### Detector output'
+            echo '```'; cat /tmp/compat.txt 2>/dev/null || echo '(unavailable)'; echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
