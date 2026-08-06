@@ -270,10 +270,16 @@ compatibility; they are re-exports, not the implementation.
   makes the module unimportable on any machine without credentials — including
   CI. Constructing a translator must make no network call and need no key.
 - **`cl10n/providers/groq.py` and the `groq` PyPI package share a top-level
-  name.** The connector therefore must **not** put `cl10n/providers/` on
-  `sys.path`; it reaches `base` by package-relative import. Prepend that
-  directory and `import groq` finds the connector instead of the library, as a
-  circular-import error at first use.
+  name**, and this bites in two directions. The connector must **not** put
+  `cl10n/providers/` on `sys.path` (prepend it and `import groq` inside the
+  connector finds *itself*, a circular import at first use); and the registry
+  must **not** resolve a bare connector name with `import_module` (the library
+  is normally already in `sys.modules`, so it returns the *library* and the
+  lookup dies with `module 'groq' has no attribute 'GroqTranslator'`). Both are
+  solved the same way: **connector modules and `base` are loaded from an
+  explicit file path**, under a `_cl10n_providers_*` module key. A dotted
+  connector name is still imported normally, for a connector living outside
+  this directory. `test_providers.py` pins the regression.
 - **The JSON envelope.** `TRANSLATION_PROMPT` rule 4 asks for a JSON object and
   the model obliges with `{"translation": "…"}`; storing that raw puts the
   wrapper in the TM. `base.extract_translation` unwraps it tolerantly (bare

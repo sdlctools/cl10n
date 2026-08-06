@@ -32,10 +32,13 @@ api_key_env         = "GROQ_API_KEY"
 api_key_creds_file  = "groq_creds.txt"
 # No base_url: the groq library's default (https://api.groq.com/openai/v1) is correct.
 
-# NVIDIA — OpenAI-compatible (openai lib + custom base_url), AC4.
+# NVIDIA NIM — OpenAI-compatible (openai lib + custom base_url), AC4.
+# NVIDIA_NIM_API_KEY rather than NVIDIA_API_KEY: that is the name this repo's
+# existing NIM workflows (.github/workflows/demo-fcc-nvidia-nim-*.yml) already
+# use, and reusing it means one secret serves both.
 [providers.nvidia]
 connector           = "nvidia:NvidiaTranslator"
 default_model        = "nvidia/nemotron-3-ultra-550b-a55b"
-api_key_env         = "NVIDIA_API_KEY"
-api_key_creds_file  = "nvidia_creds.txt"
+api_key_env         = "NVIDIA_NIM_API_KEY"
+api_key_creds_file  = "nvidia-nim-creds.txt"
 base_url            = "https://integrate.api.nvidia.com/v1"

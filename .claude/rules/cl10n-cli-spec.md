@@ -98,7 +98,7 @@ interruption and counting the second run's provider calls.
   fallbacks.
 - **Concurrency**: one `cl10n` group, `cancel-in-progress: false` — rapid
   pushes serialize instead of racing for the TM files.
-- **Secrets**: every declared provider key (`GROQ_API_KEY`, `NVIDIA_API_KEY`)
+- **Secrets**: every declared provider key (`GROQ_API_KEY`, `NVIDIA_NIM_API_KEY`)
   is env of **exactly one step** — Execute — and of no other; no
   `pull_request`/`pull_request_target` trigger exists, so fork code never
   executes where the secrets are. The runner reads only the active connector's

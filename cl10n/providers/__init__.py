@@ -31,6 +31,8 @@ colon (they are `vendor/model` or `vendor/tag`).
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import inspect
 import os
 import re
 import sys
@@ -182,53 +184,88 @@ def resolve_route(
     return Route(provider=selected, model=model or cfg.default_model)
 
 
-def _import_connector(connector_spec: str):
-    """Resolve `module:Class`, lazy-importing the module from this package.
+def _load_connector_module(module_name: str):
+    """Import a connector module, lazily, resolving it unambiguously.
 
-    The connector module is imported by name only when its provider is
-    resolved, so unrelated provider libraries stay unimported. The module path
-    is relative to this package (`cl10n.providers.<mod>`) — connectors live in
-    this package — or a dotted path if a future connector lives elsewhere.
+    **A bare connector name is loaded from this directory by file path, never
+    by module name.** `cl10n/providers/groq.py` and the `groq` PyPI package
+    share the top-level name `groq`, and the library is usually already in
+    `sys.modules` — so `importlib.import_module("groq")` returns the *library*
+    and the connector lookup fails with a confusing
+    `module 'groq' has no attribute 'GroqTranslator'`. Loading by path also
+    means the providers directory never has to go on `sys.path`, which is what
+    would break `import groq` inside the connector itself.
+
+    A dotted name (`my_pkg.connector`) is treated as a real importable module,
+    for a future connector that lives outside this directory.
     """
+    if "." in module_name:
+        return importlib.import_module(module_name)
+
+    key = f"_cl10n_providers_{module_name}"
+    if key in sys.modules:
+        return sys.modules[key]
+    path = os.path.join(_HERE, f"{module_name}.py")
+    if not os.path.exists(path):
+        raise ModuleNotFoundError(
+            f"connector module {module_name!r} not found at {path}"
+        )
+    spec = importlib.util.spec_from_file_location(key, path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec so a connector importing itself does not recurse.
+    sys.modules[key] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _import_connector(connector_spec: str):
+    """Resolve a `module:Class` connector spec to the class itself."""
     if ":" not in connector_spec:
         raise ValueError(f"connector {connector_spec!r} must be 'module:Class'")
     module_name, cls_name = connector_spec.rsplit(":", 1)
-    # Ensure this package (and app/) is importable for relative-style names.
-    if module_name not in sys.modules:
-        # Bare module name (e.g. "groq") → cl10n.providers.groq.
-        if "." not in module_name:
-            module_name = f"cl10n.providers.{module_name}"
-        sys.modules.setdefault("cl10n.providers", importlib.import_module(__name__))
-    mod = importlib.import_module(module_name)
-    return getattr(mod, cls_name)
+    mod = _load_connector_module(module_name)
+    try:
+        return getattr(mod, cls_name)
+    except AttributeError:
+        raise AttributeError(
+            f"connector module {module_name!r} has no class {cls_name!r} "
+            f"(loaded from {getattr(mod, '__file__', '?')})"
+        ) from None
 
 
 def build_translator(cfg: ProviderConfig, model: str):
     """Import the connector class lazily and construct it with the route's model.
 
-    `base_url` is passed only when the provider declares one (NVIDIA does;
-    Groq leaves it None so the connector uses its library default). The
-    connector's `__init__` keeps its own lazy client, so constructing the
+    `base_url` and `api_key_env` are passed only when the provider declares one
+    *and* the connector accepts it — Groq takes neither (its library default
+    endpoint is right, and `groq_api.get_client` owns its key), NVIDIA takes
+    both. Introspecting the signature rather than special-casing by name keeps
+    this generic: a new connector opts in by naming the parameter.
+
+    The connector's `__init__` keeps its own lazy client, so constructing the
     translator makes no network connection and needs no key (AC6).
     """
     cls = _import_connector(cfg.connector)
+    accepted = inspect.signature(cls.__init__).parameters
     kwargs: dict = {"model": model}
-    if cfg.base_url is not None:
+    if cfg.base_url is not None and "base_url" in accepted:
         kwargs["base_url"] = cfg.base_url
+    if "api_key_env" in accepted:
+        kwargs["api_key_env"] = cfg.api_key_env
     return cls(**kwargs)
 
 
 def get_classify(cfg: ProviderConfig):
-    """Import the connector's `classify` lazily (same module, lazy import).
+    """Import the connector's `classify` lazily (same module, same loader).
 
     The runner pairs each `Translator` with its connector's `classify` so the
     right exception taxonomy is applied; this returns it without importing
-    unrelated providers.
+    unrelated providers. Uses `_load_connector_module` for the same reason
+    `_import_connector` does — a bare name must not resolve to a same-named
+    provider library.
     """
     module_name = cfg.connector.rsplit(":", 1)[0]
-    if "." not in module_name:
-        module_name = f"cl10n.providers.{module_name}"
-    mod = importlib.import_module(module_name)
+    mod = _load_connector_module(module_name)
     if not hasattr(mod, "classify"):
         raise AttributeError(f"connector {cfg.connector!r} has no classify()")
     return mod.classify

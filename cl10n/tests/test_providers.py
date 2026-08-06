@@ -73,7 +73,7 @@ def test_each_provider_declares_its_key_env_and_default_model_ac2():
 
     nvidia = r.get("nvidia")
     assert nvidia.connector == "nvidia:NvidiaTranslator"
-    assert nvidia.api_key_env == "NVIDIA_API_KEY"
+    assert nvidia.api_key_env == "NVIDIA_NIM_API_KEY"
     assert nvidia.base_url == "https://integrate.api.nvidia.com/v1"
     assert nvidia.default_model  # non-empty
 
@@ -90,7 +90,7 @@ def test_a_third_provider_is_a_config_change_plus_a_connector_module_ac2(tmp_pat
         '[providers.nvidia]\n'
         'connector = "nvidia:NvidiaTranslator"\n'
         'default_model = "nvidia/nemotron-3-ultra-550b-a55b"\n'
-        'api_key_env = "NVIDIA_API_KEY"\n'
+        'api_key_env = "NVIDIA_NIM_API_KEY"\n'
         'base_url = "https://integrate.api.nvidia.com/v1"\n'
     )
     r = load_registry(str(config))
@@ -191,7 +191,7 @@ def test_nvidia_translator_is_constructible_without_an_api_key_ac6(monkeypatch):
     Building a translator makes no network call and needs no credential — the
     client is lazy. This is what keeps the seam stubbable.
     """
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
     r = load_registry()
     cfg = r.get("nvidia")
     tr = build_translator(cfg, nvidia_mod.DEFAULT_MODEL)
@@ -235,8 +235,57 @@ def test_nvidia_translator_unwraps_the_envelope_ac4():
 def test_the_registry_pairs_a_translator_with_its_own_classify():
     """`main()` injects the resolved provider's classify; the registry exposes it."""
     r = load_registry()
-    assert get_classify(r.get("groq")).__module__ == "cl10n.providers.groq"
-    assert get_classify(r.get("nvidia")).__module__ == "cl10n.providers.nvidia"
+    groq_classify = get_classify(r.get("groq"))
+    nvidia_classify = get_classify(r.get("nvidia"))
+    # Each comes from its own connector file, not from a provider library.
+    assert groq_classify.__module__.endswith("groq")
+    assert nvidia_classify.__module__.endswith("nvidia")
+    assert groq_classify is not nvidia_classify
+
+
+# --------------------------------------------------------------------------
+# The `groq` name collision (regression)
+# --------------------------------------------------------------------------
+
+
+def test_the_groq_connector_is_not_shadowed_by_the_groq_library():
+    """`cl10n/providers/groq.py` and the `groq` PyPI package share a name.
+
+    The library is normally already in `sys.modules` (queue_runner imports it
+    for nothing else than its exception taxonomy), so resolving the connector
+    by module *name* returns the library and the lookup dies with
+    `module 'groq' has no attribute 'GroqTranslator'` — which is exactly what
+    happened before connectors were loaded by file path. This pins that fix:
+    with the real library imported first, the registry must still find the
+    connector's class, and the library must survive intact.
+    """
+    import groq as groq_library  # the PyPI package, imported first on purpose
+
+    assert hasattr(groq_library, "AsyncGroq"), "the real groq library must be importable"
+
+    r = load_registry()
+    translator = build_translator(r.get("groq"), "some/model")
+    assert type(translator).__name__ == "GroqTranslator"
+    assert translator.model == "some/model"
+    # Loaded from cl10n/providers/groq.py, not from the site-packages library.
+    module_file = sys.modules[type(translator).__module__].__file__
+    assert module_file.endswith(os.path.join("cl10n", "providers", "groq.py"))
+    # And the library is still the library.
+    assert hasattr(groq_library, "AsyncGroq")
+
+
+def test_an_unknown_connector_module_fails_with_a_clear_message(tmp_path):
+    config = tmp_path / "providers.toml"
+    config.write_text(
+        'default = "ghost"\n\n'
+        '[providers.ghost]\n'
+        'connector = "no_such_connector:Thing"\n'
+        'default_model = "x/y"\n'
+        'api_key_env = "X_KEY"\n'
+    )
+    r = load_registry(str(config))
+    with pytest.raises(ModuleNotFoundError):
+        build_translator(r.get("ghost"), "x/y")
 
 
 # --------------------------------------------------------------------------
@@ -245,23 +294,23 @@ def test_the_registry_pairs_a_translator_with_its_own_classify():
 
 
 def test_load_creds_file_reads_the_named_env_var_into_the_environment(tmp_path, monkeypatch):
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
     creds = tmp_path / "nvidia_creds.txt"
-    creds.write_text('export NVIDIA_API_KEY="nx_12345"\nOTHER= thing\n')
-    load_creds_file(str(creds), "NVIDIA_API_KEY")
-    assert os.environ.get("NVIDIA_API_KEY") == "nx_12345"
+    creds.write_text('export NVIDIA_NIM_API_KEY="nx_12345"\nOTHER= thing\n')
+    load_creds_file(str(creds), "NVIDIA_NIM_API_KEY")
+    assert os.environ.get("NVIDIA_NIM_API_KEY") == "nx_12345"
 
 
 def test_load_creds_file_nevers_overrides_an_existing_env_var(tmp_path, monkeypatch):
     """A real env var always wins (setdefault semantics)."""
-    monkeypatch.setenv("NVIDIA_API_KEY", "real")
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "real")
     creds = tmp_path / "nvidia_creds.txt"
-    creds.write_text('NVIDIA_API_KEY=fromfile\n')
-    load_creds_file(str(creds), "NVIDIA_API_KEY")
-    assert os.environ.get("NVIDIA_API_KEY") == "real"
+    creds.write_text('NVIDIA_NIM_API_KEY=fromfile\n')
+    load_creds_file(str(creds), "NVIDIA_NIM_API_KEY")
+    assert os.environ.get("NVIDIA_NIM_API_KEY") == "real"
 
 
 def test_load_creds_file_missing_file_is_a_noop(monkeypatch):
-    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
-    load_creds_file("does/not/exist", "NVIDIA_API_KEY")
-    assert os.environ.get("NVIDIA_API_KEY") is None
+    monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
+    load_creds_file("does/not/exist", "NVIDIA_NIM_API_KEY")
+    assert os.environ.get("NVIDIA_NIM_API_KEY") is None

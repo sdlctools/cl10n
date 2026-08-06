@@ -6,7 +6,7 @@ a custom `base_url` rather than a provider-native SDK. It differs from the
 Groq connector in three places only:
 
 - the client class (`AsyncOpenAI` vs `AsyncGroq`) and its `base_url`;
-- the env var / creds file the key comes from (`NVIDIA_API_KEY`);
+- the env var / creds file the key comes from (`NVIDIA_NIM_API_KEY`);
 - `response_format` is **not** sent. The shared `TRANSLATION_PROMPT` rule 4
   asks the model for a JSON object, and `base.extract_translation` unwraps it
   tolerantly (a bare string, a fenced block, or an object under any plausible
@@ -26,7 +26,7 @@ produces it, sits in a sibling field and is discarded — it is not translation.
 
 The lazy client construction is load-bearing, identical to Groq's:
 `AsyncOpenAI` is built on first use, not at import, so this module stays
-importable without `NVIDIA_API_KEY` (CI imports connectors to inspect them).
+importable without `NVIDIA_NIM_API_KEY` (CI imports connectors to inspect them).
 """
 
 from __future__ import annotations
@@ -70,6 +70,12 @@ extract_translation = _base.extract_translation
 
 # The OpenAI-compatible base URL for NVIDIA's hosted endpoint (AC4).
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+# Fallback env var for the API key when the registry does not pass one.
+# `providers.toml` is the source of truth (`api_key_env`); this only covers a
+# connector constructed directly. NVIDIA_NIM_API_KEY matches the name this
+# repo's existing NIM workflows already use.
+DEFAULT_API_KEY_ENV = "NVIDIA_NIM_API_KEY"
 
 # Default model for the NVIDIA connector. Mirrors `cl10n/providers.toml`
 # `[providers.nvidia] default_model`. A capable Nemotron model; the model is
@@ -131,20 +137,26 @@ class NvidiaTranslator:
         client=None,
         base_url: str = NVIDIA_BASE_URL,
         max_tokens: int = 4096,
+        api_key_env: str = DEFAULT_API_KEY_ENV,
     ):
         self.model = model or DEFAULT_MODEL
         self._client = client
         self.base_url = base_url
         self.max_tokens = max_tokens
+        # Which env var holds the key. Passed in by the registry from
+        # `providers.toml` (`api_key_env`) rather than hardcoded, so renaming
+        # the variable is a config change and the connector has one less fact
+        # to keep in step.
+        self.api_key_env = api_key_env
 
     @property
     def client(self):
         # Lazy construction (see module docstring): built on first use so the
-        # module stays importable without NVIDIA_API_KEY.
+        # module stays importable without the key set.
         if self._client is None:
             openai = _load_openai()
             self._client = openai.AsyncOpenAI(
-                api_key=os.environ.get("NVIDIA_API_KEY"),
+                api_key=os.environ.get(self.api_key_env),
                 base_url=self.base_url,
             )
         return self._client
