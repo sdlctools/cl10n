@@ -53,7 +53,7 @@ implementation sub-tasks build against.
               6. enqueue                      one job per (lang, unit_hash)
                           │                   needing the LLM → l10n/queue/
                           ▼
-              7. execute                      async Groq runner — built, see
+              7. execute                      async provider runner — built, see
                           │                   cl10n/ and cl10n-runner-spec.md;
                           │                   per-job state machine §4
                           ▼
@@ -161,11 +161,13 @@ by `tree_diff.hash_tree` (16 lowercase hex chars). Each entry stores:
   hash of the source); if no file references it, it is garbage.
 - `translation` — the translated text, placeholders intact.
 - `model` + `prompt_version` — which model and which revision of the
-  translation prompt (`app/groq_api.py` `TRANSLATION_PROMPT`; version bumps
-  whenever that prompt's rules change) produced it. An entry whose
-  `prompt_version` is older than the current one is *eligible* for
-  re-translation in a dedicated refresh run; normal incremental runs do not
-  re-translate on prompt bumps.
+  translation prompt (`app/prompt.py` `TRANSLATION_PROMPT`; version bumps
+  whenever that prompt's rules change) produced it. The prompt is
+  provider-agnostic, so `prompt_version` does not record *which* provider
+  translated the unit — entries made through different connectors at the same
+  version are interchangeable. An entry whose `prompt_version` is older than
+  the current one is *eligible* for re-translation in a dedicated refresh run;
+  normal incremental runs do not re-translate on prompt bumps.
 - `translated_at` — ISO 8601 UTC timestamp.
 - `review_status` — `"machine"` (fresh from the model, unreviewed),
   `"recheck"` (content moved; context may have changed — flagged by the

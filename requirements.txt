@@ -31,7 +31,11 @@ mdformat-frontmatter==2.1.2
 linkify-it-py==2.1.0
 
 # Not part of the hashing contract — ordinary dependency, upgrade freely.
+# groq: the original provider (default connector).
+# openai: used by the NVIDIA connector against NVIDIA's OpenAI-compatible
+#         endpoint (CLN-1); OpenAI-compatible base_url, no OpenAI account needed.
 groq
+openai
 
 # tests
 pytest
