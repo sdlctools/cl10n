@@ -1,0 +1,52 @@
+# The provider registry (CLN-1 AC2).
+#
+# Declaring a provider here records: a unique name, how to construct its client
+# (the connector module + its base_url when the library default is wrong), the
+# env var and optional creds file its API key comes from, and its default
+# model. Adding a third provider later is an entry here plus a connector module
+# in `cl10n/providers/` — nothing in `queue_runner.py` changes.
+#
+# TOML (not YAML) per the issue's "unless the Kimi research or repo convention
+# argues otherwise": Kimi Code CLI — the named research target — uses TOML
+# (~/.kimi/config.toml, [providers.<name>] tables), the repo already ships a
+# pyproject.toml, and stdlib `tomllib` (Python 3.11+; CI runs 3.12) parses it
+# with no new runtime dependency. pyyaml stays a test dep; the provider
+# registry never promotes it.
+#
+# Format:
+#   default                    = "provider-name"          # backward-compat default
+#   [providers.<name>]
+#   connector                  = "module:Class"            # cl10n/providers/<module>.<Class>
+#   default_model              = "vendor/model"             # AC1 bare-model fallback
+#   api_key_env                = "ENV_VAR"                  # required
+#   api_key_creds_file         = "path"                     # optional; gitignored
+#   base_url                   = "https://..."              # optional; OpenAI-compat override
+
+default = "groq"
+
+# Groq — the original provider, backward-compatible default.
+[providers.groq]
+connector           = "groq:GroqTranslator"
+default_model        = "openai/gpt-oss-120b"
+api_key_env         = "GROQ_API_KEY"
+api_key_creds_file  = "groq_creds.txt"
+# No base_url: the groq library's default (https://api.groq.com/openai/v1) is correct.
+
+# NVIDIA NIM — OpenAI-compatible (openai lib + custom base_url), AC4.
+# NVIDIA_NIM_API_KEY rather than NVIDIA_API_KEY: that is the name this repo's
+# existing NIM workflows (.github/workflows/demo-fcc-nvidia-nim-*.yml) already
+# use, and reusing it means one secret serves both.
+[providers.nvidia]
+connector           = "nvidia:NvidiaTranslator"
+default_model        = "nvidia/nemotron-3-ultra-550b-a55b"
+api_key_env         = "NVIDIA_NIM_API_KEY"
+api_key_creds_file  = "nvidia-nim-creds.txt"
+base_url            = "https://integrate.api.nvidia.com/v1"
+
+# Mistral — its own SDK (mistralai), not an OpenAI-compatible endpoint.
+# No base_url: the SDK targets api.mistral.ai by default.
+[providers.mistral]
+connector           = "mistral:MistralTranslator"
+default_model        = "mistral-large-latest"
+api_key_env         = "MISTRAL_API_KEY"
+api_key_creds_file  = "mistral-creds.txt"

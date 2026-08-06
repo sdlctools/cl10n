@@ -26,6 +26,7 @@ run the same four subcommands — there is no CI-only code path.
 ```bash
 venv/bin/python3 cl10n/cli.py plan   --langs he,ru        # manifest + git → queue
 venv/bin/python3 cl10n/cli.py run    l10n/queue/queue.json -c 8
+venv/bin/python3 cl10n/cli.py run    QUEUE --provider nvidia          # pass-through
 venv/bin/python3 cl10n/cli.py render --langs he,ru        # TM → locales/ + manifest
 venv/bin/python3 cl10n/cli.py status --langs he,ru        # coverage per language
 ```
@@ -97,9 +98,13 @@ interruption and counting the second run's provider calls.
   fallbacks.
 - **Concurrency**: one `cl10n` group, `cancel-in-progress: false` — rapid
   pushes serialize instead of racing for the TM files.
-- **Secrets**: `GROQ_API_KEY` is env of exactly one step; no
+- **Secrets**: every declared provider key (`GROQ_API_KEY`, `NVIDIA_NIM_API_KEY`)
+  is env of **exactly one step** — Execute — and of no other; no
   `pull_request`/`pull_request_target` trigger exists, so fork code never
-  executes where the secret is.
+  executes where the secrets are. The runner reads only the active connector's
+  `api_key_env` (`cl10n/providers.toml`), so a key bound to the step but not
+  selected this run sits unread. `PROVIDER`/`MODEL` (workflow env, overridable
+  by dispatch inputs) choose the connector; empty means the default, Groq.
 
 ## RETIRE garbage collection
 
@@ -114,6 +119,9 @@ the other documents' translations.
    argument surface. `main` routes it *before* argparse: `nargs=REMAINDER`
    only starts collecting at the first non-option token, so a subparser would
    reject `run --dry-run` while the queue path is documented as optional.
+   The provider flags (`--provider`, `--model`, `--providers`) are the
+   runner's and pass straight through — `cli.py` must not learn about
+   providers, and does not import a connector.
 2. Segmentation comes from `tree_diff`'s private helpers (as in
    `reassemble.py`) — no second definition of "translation unit".
 3. `plan` may write only the TM (RECHECK flags, restores); queue via

@@ -21,8 +21,11 @@ the two disagree, the spec wins and this file is the bug.
 | --- | --- |
 | `cl10n/queue_runner.py` | The runner. Reads a queue file, drives every job to a terminal state, writes the translation memory. |
 | `cl10n/l10n_store.py` | Persistence primitives: atomic writes, the queue file, the per-language TM. No provider, no asyncio. |
+| `cl10n/providers.toml` | The provider registry (§7): who is declared, their keys, defaults and connectors. |
+| `cl10n/providers/` | The registry loader + one connector module per provider (§7). |
 | `cl10n/build_queue.py` | **Dev scaffolding**, not a pipeline component — see "What this is not". |
 | `cl10n/placeholders.py` | The placeholder-integrity rule (§6), shared with reassembly so the two enforcement points cannot drift. |
+| `app/prompt.py` | The provider-agnostic prompt, `PROMPT_VERSION` and `LANG_NAMES` (§7). |
 | `cl10n/tests/` | Provider stubbed throughout; none needs an API key or touches the network. |
 
 Reassembly and rendering — the step that consumes this runner's output — is
@@ -36,6 +39,8 @@ its writer.
 ```bash
 venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run
 venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json -c 8
+venv/bin/python3 cl10n/queue_runner.py QUEUE --provider nvidia          # §7
+venv/bin/python3 cl10n/queue_runner.py QUEUE --model nvidia:some/model  # §7
 venv/bin/python3 -m pytest                                       # full suite
 venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
 ```
@@ -160,10 +165,12 @@ how a client turns one rate limit into a stampede of them.
 ## 5. `RateLimitGate` — the part the spec does not prescribe
 
 **A rate limit is a property of the account, not of the job that discovered
-it.** Groq's is tokens-per-minute across the organisation. With per-job backoff
-alone, every worker retries privately into the same wall, so one throttle
-multiplies by the concurrency level and jobs exhaust a retry budget against a
-condition that was never theirs.
+it.** Groq's is tokens-per-minute across the organisation, and every provider
+worth adding meters something similar. With per-job backoff alone, every worker
+retries privately into the same wall, so one throttle multiplies by the
+concurrency level and jobs exhaust a retry budget against a condition that was
+never theirs. The gate is therefore provider-independent — it lives in the
+runner, not in a connector.
 
 The first job to see a 429 therefore parks the **whole run** for the window the
 provider asked for. `trip()` only ever extends the window, never shortens it: a
@@ -208,7 +215,7 @@ Note that a placeholder absent from the source cannot be lost, so it never
 fails the gate. That is correct, and it is also the shape of the most likely
 bad test: assert against a placeholder the source actually contains.
 
-## 7. The provider seam
+## 7. The provider seam — pluggable, config-driven
 
 `Translator` is one method returning **translated text**, not a raw completion:
 
@@ -217,28 +224,95 @@ class Translator(Protocol):
     async def translate(self, prompt: str) -> str: ...
 ```
 
-Everything provider-shaped lives behind it in `GroqTranslator` — the client,
-the model, `response_format`, and unwrapping the reply. That narrowness is why
-every test stubs the provider in three lines and why no test needs a key.
+Everything provider-shaped lives behind it in a **connector**. That narrowness
+is why every test stubs the provider in three lines and why no test needs a
+key — a streaming connector aggregates to a final string before returning, so
+this is always one complete translation, never an iterator.
 
-**Two things about `app/groq_api.py` that will bite you if you undo them:**
+### Adding a provider is config plus a module — never a runner change
 
-- Its client is built **lazily** via `get_client()`. At module scope
-  `AsyncGroq` raises when `GROQ_API_KEY` is unset, which makes the module
-  unimportable on any machine without credentials — including CI.
-- `TRANSLATION_PROMPT` rule 4 asks the model for a JSON object, and the model
-  obliges with `{"translation": "…"}`. `groq_api.translate_text` returns that
-  envelope **verbatim**, so anything built on it stores the wrapper as if it
-  were the translation. `queue_runner.extract_translation` unwraps it, and the
-  runner sends `response_format={"type": "json_object"}` so the reply shape is
-  guaranteed rather than lucky.
+The step-by-step, with the checklist and the traps, is
+[`cl10n/PROVIDERS.md`](../../cl10n/PROVIDERS.md). What follows is the design.
+
+```
+cl10n/providers.toml     default = "groq"; one [providers.<name>] table each
+cl10n/providers/
+    base.py              Failure, Translator, extract_translation, _retry_after,
+                         the generic classify tail. No provider library.
+    __init__.py          Registry, load_registry (stdlib tomllib), resolve_route,
+                         build_translator, get_classify, load_creds_file
+    groq.py              GroqTranslator + classify (the groq taxonomy)
+    nvidia.py            NvidiaTranslator + classify (the openai taxonomy)
+    mistral.py           MistralTranslator + classify (the mistralai SDK)
+```
+
+A provider declares: `connector` (`module:Class`), `default_model`,
+`api_key_env`, optional `api_key_creds_file`, optional `base_url`. The registry
+**lazy-imports** the connector only when the route resolves to it, so a Groq
+run never imports `openai`. `main()` resolves the route, loads that provider's
+key, builds its translator and pairs it with **its own `classify`**, which the
+runner holds as `self.classify`. A third provider is a table plus a module;
+`queue_runner.py` does not change.
+
+**Routing** (`--provider`, and an optional `provider:model` prefix on
+`--model`), in priority order:
+
+1. `--model nvidia:some/model` → that provider, that model (prefix wins);
+2. `--provider nvidia` → that provider; a bare `--model` resolves against it,
+   no `--model` uses its `default_model`;
+3. neither → the default provider, its default model — **identical to
+   pre-CLN-1 behavior**.
+
+`queue_runner` re-exports `Failure`, `Translator`, `extract_translation`,
+`GroqTranslator` and `classify` (the default provider's) for backward
+compatibility; they are re-exports, not the implementation.
+
+**Three things that will bite you if you undo them:**
+
+- **Each connector's client is built lazily.** `AsyncGroq`/`AsyncOpenAI` at
+  module scope raises (or silently misconfigures) when the key is unset, which
+  makes the module unimportable on any machine without credentials — including
+  CI. Constructing a translator must make no network call and need no key.
+- **`cl10n/providers/groq.py` and the `groq` PyPI package share a top-level
+  name**, and this bites in two directions. The connector must **not** put
+  `cl10n/providers/` on `sys.path` (prepend it and `import groq` inside the
+  connector finds *itself*, a circular import at first use); and the registry
+  must **not** resolve a bare connector name with `import_module` (the library
+  is normally already in `sys.modules`, so it returns the *library* and the
+  lookup dies with `module 'groq' has no attribute 'GroqTranslator'`). Both are
+  solved the same way: **connector modules and `base` are loaded from an
+  explicit file path**, under a `_cl10n_providers_*` module key. A dotted
+  connector name is still imported normally, for a connector living outside
+  this directory. `test_providers.py` pins the regression.
+- **The JSON envelope.** `TRANSLATION_PROMPT` rule 4 asks for a JSON object and
+  the model obliges with `{"translation": "…"}`; storing that raw puts the
+  wrapper in the TM. `base.extract_translation` unwraps it tolerantly (bare
+  string, fenced block, any plausible key). Groq additionally sends
+  `response_format={"type": "json_object"}` so the shape is guaranteed rather
+  than lucky; NVIDIA does not, because its NIM model zoo is wider and not every
+  model accepts JSON mode — there the prompt plus the tolerant extractor carry
+  it.
+
+Classification is per connector but the **kinds are not negotiable**: every
+connector maps its library's exceptions onto §4's table and delegates its
+generic tail (asyncio/OS timeouts, the unknown case) to `base.classify`, so
+retries and the rate-limit gate behave identically across providers.
+
+### The prompt is provider-agnostic
+
+`app/prompt.py` owns `TRANSLATION_PROMPT`, `PROMPT_VERSION` and `LANG_NAMES`;
+`app/groq_api.py` re-exports them for backward compatibility. Every connector
+sends identical rules, so a Groq translation and an NVIDIA translation at the
+same `PROMPT_VERSION` are interchangeable and **the TM shortcut fires across
+providers** — switching provider does not re-bill the corpus.
 
 ### `PROMPT_VERSION` — when to bump it
 
 `PROMPT_VERSION` versions `TRANSLATION_PROMPT`'s **rules** only. The runner
 wraps that template with per-job payload — heading-trail context, the `REVISE`
 old-source/prior-translation pair, the corrective retry instruction — and none
-of that bumps the version.
+of that bumps the version. Neither does the connector a translation came
+through.
 
 Bump it when the CRITICAL RULES themselves change. Understand what that costs
 first: every existing TM entry becomes older-than-current, which stops the TM
@@ -278,4 +352,11 @@ garbage collection and the `fallbacks` list belong to the orchestrator.
    bookkeeping, so anything per-run and transient (backoff schedules, the
    corrective-retry placeholder list) stays in memory.
 7. `--dry-run` writes nothing at all — not even the restart rule, which would
-   otherwise mutate the file it is reporting on.
+   otherwise mutate the file it is reporting on. It also needs no key and
+   resolves a route without building a client.
+8. Adding a provider is a `providers.toml` table plus a connector module (§7).
+   If a change makes the runner branch on provider identity, the seam has been
+   broken — put the difference in the connector instead.
+9. Every connector: lazy client, its own `classify` mapping onto §4's kinds,
+   and a `translate` returning the finished string. No test may need a key or
+   touch the network.

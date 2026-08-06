@@ -67,7 +67,7 @@ sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
 
 from markdown_it.tree import SyntaxTreeNode  # noqa: E402
 
-import groq_api  # noqa: E402  (app/ — PROMPT_VERSION only; its client is lazy)
+import prompt as prompt_mod  # noqa: E402  (app/ — PROMPT_VERSION; provider-agnostic)
 import manifest as manifest_mod  # noqa: E402
 import queue_runner  # noqa: E402
 import reassemble  # noqa: E402
@@ -155,7 +155,7 @@ def has_usable_entry(tm: TranslationMemory, unit_hash: str) -> bool:
     entry = tm.get(unit_hash)
     return bool(
         entry
-        and entry.get("prompt_version") == groq_api.PROMPT_VERSION
+        and entry.get("prompt_version") == prompt_mod.PROMPT_VERSION
         and (entry.get("translation") or "").strip()
     )
 

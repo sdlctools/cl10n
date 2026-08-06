@@ -30,11 +30,21 @@
 # queue the second run behind the first rather than racing it for the TM
 # files. GitHub additionally collapses a queued backlog to the newest run.
 #
-# SECRETS (AC6): GROQ_API_KEY is exposed to exactly one step (Execute), which
-# talks only to the provider and prints job ids, never request contents. The
-# workflow runs on `push` to the default branch and on manual dispatch only —
-# it has no pull_request/pull_request_target trigger, so code from a fork can
-# never execute in a context that holds the secret.
+# SECRETS (AC6/AC7): the active provider's key is exposed to exactly one step
+# (Execute), which talks only to the provider and prints job ids, never request
+# contents. The workflow runs on `push` to the default branch and on manual
+# dispatch only — it has no pull_request/pull_request_target trigger, so code
+# from a fork can never execute in a context that holds the secret.
+#
+# PLUGGABLE PROVIDERS (CLN-1): all declared provider secrets land on the one
+# Execute step's `env:` — the runner reads only the active provider's env var
+# (`api_key_env` in `cl10n/providers.toml`), so an unused secret sits unread,
+# never exposed further. The single-secret-per-run property is preserved in
+# the sense that matters: exactly one step ever holds a provider key, and the
+# repo never gains a pull_request trigger. `PROVIDER` selects the connector
+# (empty = the default, Groq — backward compatible); a `provider:model`
+# prefix on `MODEL` routes too. Override either via the dispatch inputs or by
+# setting the env here for a different default.
 
 name: cl10n
 
@@ -43,7 +53,20 @@ on:
     branches: [development]
     paths:
       - "md/**"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    # Resume a run, or push through a provider override (CLN-1). Empty inputs
+    # reproduce an ordinary push: default provider, no model override.
+    inputs:
+      provider:
+        description: "Provider to run ('' for the default, groq; e.g. nvidia)"
+        required: false
+        default: ""
+        type: string
+      model:
+        description: "Model id, optionally 'provider:model' to also route"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: cl10n
@@ -66,6 +89,12 @@ env:
   LANGS: he,ru
   PR_BRANCH: cl10n/translations
   QUEUE: l10n/queue/queue.json
+  # Provider selection (CLN-1 AC7): empty/omitted → default (Groq); "nvidia"
+  # (or a `provider:` prefix on MODEL) runs NVIDIA. Both real keys are passed
+  # only to the Execute step below; the runner reads the one its active
+  # connector names in providers.toml.
+  PROVIDER: ""
+  MODEL: ""
 
 jobs:
   localize:
@@ -164,13 +193,26 @@ jobs:
         # resumes from the committed + salvaged memory. The non-zero exit for
         # rejected jobs is likewise not a workflow failure: rejected units
         # render as English fallbacks and are re-planned next run.
+        #
+        # Both declared provider keys are on this one step (CLN-1 AC7): the
+        # runner reads only the active connector's `api_key_env`, so the unused
+        # key is bound but never read or printed. Adding a third provider's
+        # secret here is the only change a new provider needs in this file.
         id: run
         if: steps.plan.outputs.jobs != '0'
         continue-on-error: true
         timeout-minutes: 150
         env:
+          PROVIDER: ${{ github.event.inputs.provider || '' }}
+          MODEL: ${{ github.event.inputs.model || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: venv/bin/python3 cl10n/cli.py run "$QUEUE" -c 8
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          args=(venv/bin/python3 cl10n/cli.py run "$QUEUE" -c 8)
+          [ -n "$PROVIDER" ] && args+=(--provider "$PROVIDER")
+          [ -n "$MODEL" ] && args+=(--model "$MODEL")
+          "${args[@]}"
 
       - name: Upload the translation memory as a crash artifact
         # Runs even when Execute failed or timed out — this is layer 3 for the

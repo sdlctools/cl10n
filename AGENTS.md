@@ -18,6 +18,8 @@ There is n working pipeline, our task is to research this operation.
 * cl10n/ - the continuous-localization runtime (queue runner, state store,
   reassembly/render, its tests). New pipeline components go here, not in app/,
   so the runtime stays reviewable on its own.
+  * cl10n/providers/ - one connector module per provider, plus the registry
+    that loads `cl10n/providers.toml` and routes `--provider` / `provider:model`
 * locales/ - rendered translations, `locales/<lang>/` mirroring `md/` (committed)
 * l10n/ - pipeline state: `tm/<lang>.json` and `manifest.json` committed,
   `queue/` gitignored
@@ -56,29 +58,46 @@ those schemas.
 ## cl10n/ — the localization runtime (step 7: executing the queue)
 
 `cl10n/queue_runner.py` takes a queue file and drives it to completion against
-Groq: bounded concurrency, per-job retry with exponential backoff and jitter,
-an account-wide rate-limit gate, the placeholder gate, and translation-memory
-writes with provenance. It resumes from wherever a previous run stopped —
-kill it at any point and re-run it; `done` and `rejected` jobs are never
-re-billed.
+a configured provider: bounded concurrency, per-job retry with exponential
+backoff and jitter, an account-wide rate-limit gate, the placeholder gate, and
+translation-memory writes with provenance. It resumes from wherever a previous
+run stopped — kill it at any point and re-run it; `done` and `rejected` jobs
+are never re-billed.
 
 ```bash
 venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run  # plan only, no API
 venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json -c 8
+venv/bin/python3 cl10n/queue_runner.py QUEUE --provider nvidia          # pick a provider
+venv/bin/python3 cl10n/queue_runner.py QUEUE --model nvidia:some/model  # prefix routes too
 venv/bin/python3 cl10n/build_queue.py --langs he,ru -o l10n/queue/queue.json
 ```
 
-`GROQ_API_KEY` comes from the environment, or from `groq_creds.txt`
-(gitignored) via `--creds-file`. `cl10n/l10n_store.py` holds the atomic-write,
-queue and TM primitives; `cl10n/build_queue.py` is **dev scaffolding** that
-plans the corpus against the empty document — it is not the pipeline's real
-enqueue step, which belongs to its own sub-task.
+**Providers are pluggable and declared in `cl10n/providers.toml`** — a name,
+its connector module, default model, and the env var (plus optional gitignored
+creds file) its key comes from. Three ship: Groq is the default
+(`GROQ_API_KEY`), NVIDIA uses the `openai` library against
+`https://integrate.api.nvidia.com/v1` (`NVIDIA_NIM_API_KEY`), and Mistral uses
+its own `mistralai` SDK (`MISTRAL_API_KEY`). `--provider` selects one, and a
+`provider:model` prefix on `--model` both selects and sets the model; with
+neither, behavior is exactly as before. Each connector lives in its own module
+under `cl10n/providers/` and brings its own client and exception mapping, so
+**adding a provider is a config entry plus a module — no runner change**. The
+shared prompt, `PROMPT_VERSION` and `LANG_NAMES` are provider-agnostic in
+`app/prompt.py`, which is why the translation memory is shared across providers
+rather than re-billed when you switch.
+
+`cl10n/l10n_store.py` holds the atomic-write, queue and TM primitives;
+`cl10n/build_queue.py` is **dev scaffolding** that plans the corpus against the
+empty document — it is not the pipeline's real enqueue step, which belongs to
+its own sub-task.
 
 The design — write orderings, resumption, retry classification, why the
-rate-limit gate is account-wide rather than per-job, when `PROMPT_VERSION`
-may be bumped, and what must not move into `cl10n/` — is in
+rate-limit gate is account-wide rather than per-job, the provider seam and how
+to add one, when `PROMPT_VERSION` may be bumped, and what must not move into
+`cl10n/` — is in
 [`.claude/rules/cl10n-runner-spec.md`](.claude/rules/cl10n-runner-spec.md).
-Read it before changing concurrency, retries, persistence, or prompts.
+Read it before changing concurrency, retries, persistence, providers, or
+prompts.
 
 Measured on the real corpus (30 units, `he`, free-tier account at 8000 TPM):
 232s serially vs 156s at `-c 8`, and the shared rate-limit gate took the run
@@ -150,9 +169,17 @@ worked flows — first localization, adding a language, day-to-day updates —
 plus a cookbook and a troubleshooting table. Read the spec for *why*, the
 guide for *how*. [`cl10n/INTEGRATION.md`](cl10n/INTEGRATION.md) covers
 vendoring the pipeline into another repository, which has its own failure
-modes: which files to copy (not `cl10n/tests/` — they test *this* repo), what
-committing actually buys, and the one-manifest-per-repository rule that
-silently deletes translations if you invert it.
+modes: which files to copy (not `cl10n/tests/` — they test *this* repo, and
+`cl10n/providers/` is a directory the `*.py` glob misses), what committing
+actually buys, and the one-manifest-per-repository rule that silently deletes
+translations if you invert it.
+
+**Adding a provider: [`cl10n/PROVIDERS.md`](cl10n/PROVIDERS.md)** — the
+step-by-step for teaching the pipeline a new LLM API. One TOML entry plus one
+connector module; the runner and the CLI are never edited. Covers the
+`classify` kinds table, the lazy-client and no-runner-branching invariants, the
+`groq` name-collision trap, the test bar (no key, no network) and the CI secret
+wiring.
 
 ## the parsing stack is pinned, and drift is checked
 
@@ -176,11 +203,15 @@ releases as early warning. Rationale and the three drift classes:
 [`.claude/rules/tree-diff-spec.md`](.claude/rules/tree-diff-spec.md) →
 "The parser configuration is part of the contract".
 
+The provider libraries (`groq`, `openai`) are **not** part of that contract —
+they never touch a hash — so they are unpinned and upgrade freely.
+
 ## tests
 
 ```bash
 venv/bin/python3 -m pytest                                            # full suite
 venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
+venv/bin/python3 -m pytest cl10n/tests/test_providers.py              # registry + connectors
 venv/bin/python3 -m pytest cl10n/tests/test_compat.py                 # drift detector
 ```
 
@@ -189,6 +220,9 @@ makes a network call. The reassembly tests run against the real `md/` corpus
 with a pseudolocalized memory, so they cover both target languages end to end.
 The orchestrator tests build a real throwaway git repo per test and drive the
 full `plan → run → render` cycle, including a mid-run kill and resume.
+`test_providers.py` covers the registry, `--provider`/model-prefix routing and
+each connector's exception mapping — constructing a translator must stay
+key-free and network-free.
 
 ## python libs in use
 W're dealing with complex markdown structires (gfm compatible) and  hardly rely on mdformat, merkdown-it-py packages, and their plugins.. See how to process markdown to ast and vice versa.

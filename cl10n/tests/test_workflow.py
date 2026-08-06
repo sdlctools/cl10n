@@ -74,12 +74,40 @@ def test_rapid_pushes_serialize_instead_of_racing(workflow):
 
 
 def test_the_provider_secret_reaches_exactly_one_step(steps):
-    """AC6 — the key is env of the Execute step and of nothing else."""
+    """AC6/AC7 — every provider key is env of the Execute step and nothing else.
+
+    Single-secret-per-run is preserved in the form that matters for fork safety
+    (CLN-1): exactly one step ever holds a provider key, and the repo never
+    gains a pull_request trigger. The runner reads only its active connector's
+    `api_key_env`, so a key bound to the step but unused this run sits unread.
+    This asserts that shape — both declared keys on the one Execute step — so a
+    future provider's secret landing on a second step would fail here.
+    """
     holders = [
         step["name"] for step in steps
-        if "GROQ_API_KEY" in str(step.get("env", {}))
+        if any(k in str(step.get("env", {}))
+               for k in ("GROQ_API_KEY", "NVIDIA_NIM_API_KEY", "MISTRAL_API_KEY"))
     ]
     assert holders == ["Execute the queue"]
+
+
+def test_every_declared_provider_has_its_secret_wired(steps):
+    """A provider in `providers.toml` whose key never reaches CI is a trap.
+
+    It works locally (creds file), then every CI run rejects every job with an
+    auth error the moment someone routes to it. Cheap to assert, so assert it.
+    """
+    import tomllib
+
+    with open(os.path.join(REPO, "cl10n", "providers.toml"), "rb") as fh:
+        declared = tomllib.load(fh)["providers"]
+    execute = next(s for s in steps if s["name"] == "Execute the queue")
+    env = execute.get("env", {})
+    for name, cfg in declared.items():
+        assert cfg["api_key_env"] in env, (
+            f"provider {name!r} declares {cfg['api_key_env']} but the Execute "
+            f"step does not pass it"
+        )
 
 
 def test_no_fork_triggered_event_can_reach_the_secret(triggers):
