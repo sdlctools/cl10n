@@ -117,9 +117,14 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        # The package plus every provider SDK, so any `PROVIDER` this run may
+        # be dispatched with can be routed to. Not `-r requirements.txt`: that
+        # is the contributor setup and additionally drags in pytest, build and
+        # twine, none of which a localization run has any use for. Installing
+        # the package is what puts the `cl10n` console script on the path.
         run: |
           python -m venv venv
-          venv/bin/pip install --quiet -r requirements.txt
+          venv/bin/pip install --quiet ".[all-providers]"
 
       - name: Recover state from the open localization PR branch
         # Layer 2: a finished run whose PR nobody merged yet. Its TM is real,
@@ -175,7 +180,7 @@ jobs:
           for dir in /tmp/salvage/pr-branch /tmp/salvage/artifact; do
             [ -d "$dir" ] && restore_flags="$restore_flags --restore-tm $dir"
           done
-          venv/bin/python3 cl10n/cli.py plan --langs "$LANGS" \
+          venv/bin/cl10n plan --langs "$LANGS" \
             -o "$QUEUE" --report /tmp/plan-report.json $restore_flags
           jobs=$(venv/bin/python3 -c "import json; print(json.load(open('/tmp/plan-report.json'))['jobs'])")
           render=$(venv/bin/python3 -c "import json; print(str(json.load(open('/tmp/plan-report.json'))['render_required']).lower())")
@@ -209,7 +214,7 @@ jobs:
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
         run: |
-          args=(venv/bin/python3 cl10n/cli.py run "$QUEUE" -c 8)
+          args=(venv/bin/cl10n run "$QUEUE" -c 8)
           [ -n "$PROVIDER" ] && args+=(--provider "$PROVIDER")
           [ -n "$MODEL" ] && args+=(--model "$MODEL")
           "${args[@]}"
@@ -232,12 +237,12 @@ jobs:
         if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
         continue-on-error: true
         run: |
-          venv/bin/python3 cl10n/cli.py render --langs "$LANGS" \
+          venv/bin/cl10n render --langs "$LANGS" \
             --queue "$QUEUE" --report /tmp/render-report.json
 
       - name: Status
         if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
-        run: venv/bin/python3 cl10n/cli.py status --langs "$LANGS" || true
+        run: venv/bin/cl10n status --langs "$LANGS" || true
 
       - name: Open or update the pull request
         if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
@@ -261,7 +266,7 @@ jobs:
           # subsumed. The PR (if open) follows the branch.
           git push --force origin "$PR_BRANCH"
 
-          venv/bin/python3 cl10n/ci_report.py \
+          venv/bin/python3 -m cl10n.ci_report \
             --plan /tmp/plan-report.json --queue "$QUEUE" \
             --render /tmp/render-report.json -o /tmp/pr-body.md
 

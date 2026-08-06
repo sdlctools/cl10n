@@ -4,14 +4,14 @@ description: >-
   translation-unit segmentation, and translation-memory keying. Read before
   changing how changed content is detected, hashed, segmented, or scored.
 paths:
-  - app/tree_diff.py
-  - app/utils.py
+  - cl10n/core/tree_diff.py
+  - cl10n/core/utils.py
 ---
 
 # Incremental Markdown localization — AST diff spec
 
 How to decide *what to retranslate* when a Markdown document changes, and why.
-Implemented in [`tree_diff.py`](../../app/tree_diff.py).
+Implemented in [`tree_diff.py`](../../cl10n/core/tree_diff.py).
 
 ## The theory — yes, this is a well-studied problem
 
@@ -121,7 +121,7 @@ Including either would make every diff document-wide dirty.
 
 ### The parser configuration is part of the contract
 
-`utils.make_parser` is the single parser every stage shares, and two of its
+`cl10n.core.utils.make_parser` is the single parser every stage shares, and two of its
 options are switched **off** against the `gfm-like2` preset's defaults. Both
 for the same reason: markdown-it-py grew a native implementation of a
 construct that mdformat cannot render, and a construct that cannot be rendered
@@ -149,20 +149,20 @@ and their normalisations.
 
 Both breakages arrived the same way: an unpinned minor upgrade taught
 markdown-it-py to parse something mdformat cannot render. So the parsing stack
-is now **pinned exactly** in `requirements.txt`, and
+is now **pinned exactly** in `pyproject.toml`'s `[project] dependencies`, and
 [`cl10n/compat_check.py`](../../cl10n/compat_check.py) is the gate for moving a
 pin:
 
 ```bash
-venv/bin/python3 cl10n/compat_check.py            # verify
-venv/bin/python3 cl10n/compat_check.py --update   # re-record, then read the diff
+venv/bin/python3 -m cl10n.compat_check            # verify
+venv/bin/python3 -m cl10n.compat_check --update   # re-record, then read the diff
 ```
 
 It compares three things against `cl10n/compat-baseline.json`, cheapest signal
 first: the parser's **option surface** (a preset gaining an option is visible
 before any document triggers it — this alone would have caught `alerts`), its
 **renderable node types** (the crash class), and the **canonical form and unit
-hashes** of `cl10n/tests/fixtures/kitchen-sink.md` (the silent class, where
+hashes** of `cl10n/fixtures/kitchen-sink.md` (the silent class, where
 nothing raises and the whole corpus quietly rehashes).
 
 `.github/workflows/checks.yml` runs it on every push and pull request against
@@ -234,8 +234,8 @@ asymmetric (`ratio(a, b) != ratio(b, a)`).
 ## Usage
 
 ```bash
-venv/bin/python3 app/tree_diff.py            # demo on review-report.md
-venv/bin/python3 app/tree_diff.py a.md b.md
+venv/bin/python3 -m cl10n.core.tree_diff            # demo on review-report.md
+venv/bin/python3 -m cl10n.core.tree_diff a.md b.md
 ```
 
 Demo output — the sample doc plus three synthetic edits (one in-place list-item
@@ -256,15 +256,15 @@ cells diff independently.
 
 ## Implementation notes
 
-- [`hash_tree`](../../app/tree_diff.py) — Merkle hashing; a translation unit's identity is
+- [`hash_tree`](../../cl10n/core/tree_diff.py) — Merkle hashing; a translation unit's identity is
   its `inline` source string, not its parsed children.
-- [`similarity`](../../app/tree_diff.py) — falls back from Dice-over-descendant-hashes to
+- [`similarity`](../../cl10n/core/tree_diff.py) — falls back from Dice-over-descendant-hashes to
   flat-text ratio for small containers, because editing a one-paragraph
   `list_item`'s only sentence zeroes its Dice score.
-- [`_align_window`](../../app/tree_diff.py) — greedy best-first pairing inside one
+- [`_align_window`](../../cl10n/core/tree_diff.py) — greedy best-first pairing inside one
   `replace` window; the m×n matrix stays small because the window is one changed
   sibling run.
-- [`tm_keys`](../../app/tree_diff.py) — the O(n) shortcut: `{unit_hash: source}` for a
+- [`tm_keys`](../../cl10n/core/tree_diff.py) — the O(n) shortcut: `{unit_hash: source}` for a
   document.
 
 ## Downstream

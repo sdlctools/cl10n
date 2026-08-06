@@ -1,6 +1,6 @@
 """Provider-agnostic translation prompt and the constants that version it.
 
-These were born in `app/groq_api.py` (the Groq connector) but are not
+These were born in `cl10n/core/groq_api.py` (the Groq connector) but are not
 Groq-specific — every connector sends the same prompt and records the same
 `PROMPT_VERSION` against each TM entry. They live here so a connector module
 imports only what is actually provider-shaped (its client, its exception

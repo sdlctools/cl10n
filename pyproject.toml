@@ -1,4 +1,123 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "markdown-localization"
+name = "cl10n"
 version = "0.1.1-dev.2"
-description = "Markdown-styled content translation and continuous localization research"
+description = "Continuous localization for Markdown corpora — AST-level change detection, a translation memory, and pluggable LLM providers"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Valentin Kantor" }]
+keywords = ["markdown", "localization", "l10n", "translation", "i18n", "llm"]
+
+# 3.11 is the floor and it is not arbitrary: `cl10n/providers/__init__.py`
+# parses `providers.toml` with the stdlib `tomllib`, which arrived in 3.11.
+# CI runs 3.12, comfortably inside this range.
+requires-python = ">=3.11"
+
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Localization",
+  "Topic :: Text Processing :: Markup :: Markdown",
+]
+
+# THE PARSING STACK IS PINNED EXACTLY, AND THAT IS NOT FUSSINESS.
+#
+# Every unit hash in every `l10n/tm/<lang>.json` is taken over the output of
+# `cl10n.core.utils.make_parser`, which is these six packages in one specific
+# configuration. A minor upgrade can — and twice already did — change what the
+# parser emits:
+#
+#   * markdown-it-py 4.2 began parsing task lists natively, emitting no
+#     checkbox token; mdformat's list renderer asserts on the missing token,
+#     so every document containing `- [ ]` raised.
+#   * the same release began parsing GitHub alerts into `alert` nodes, which
+#     mdformat cannot render at all — `KeyError: 'alert'`.
+#
+# A change that does not raise is worse: it silently alters the canonical
+# form, every hash moves, and the next run re-translates the entire corpus at
+# full price while orphaning the existing memory.
+#
+# So: upgrade these deliberately, one at a time, and run the drift detector.
+#
+#     python -m cl10n.compat_check
+#
+# It compares the parser's option surface, its renderable node types and the
+# canonical form of `cl10n/fixtures/kitchen-sink.md` against
+# `cl10n/compat-baseline.json`. Green means the upgrade is safe to take;
+# re-record with `--update` only when you have read the diff and understood
+# every line.
+dependencies = [
+  "markdown-it-py==4.2.0",
+  "mdit-py-plugins==0.6.1",
+  "mdformat==1.0.0",
+  "mdformat-gfm==1.0.0",
+  "mdformat-frontmatter==2.1.2",
+  "linkify-it-py==2.1.0",
+]
+
+# Provider SDKs are extras, one per connector in `cl10n/providers/`. They are
+# NOT part of the hashing contract — they never touch a hash — so they are
+# unpinned and upgrade freely. Connectors import them lazily, so installing
+# `cl10n[all-providers]` still means a run only ever loads the SDK it routes
+# to; the extras exist so a user who routes to one vendor does not download
+# three.
+[project.optional-dependencies]
+groq = ["groq"]
+# The NVIDIA connector talks to NVIDIA's OpenAI-compatible NIM endpoint via
+# the `openai` library and a custom base_url — no OpenAI account involved.
+nvidia = ["openai"]
+# Mistral ships its own SDK. Note 2.x moved the client to `mistralai.client`:
+# `from mistralai import Mistral` fails.
+mistral = ["mistralai"]
+all-providers = ["cl10n[groq,nvidia,mistral]"]
+
+# Everything the suite needs on top of a normal install. `cl10n[dev]` plus a
+# checkout is the contributor setup; see AGENTS.md → tests.
+dev = [
+  "cl10n[all-providers]",
+  "pytest",
+  "pytest-asyncio",
+  "jsonschema",
+  "pyyaml",
+  "build",
+  "twine",
+]
+
+[project.urls]
+Homepage = "https://github.com/kantorv/markdown-localization"
+Repository = "https://github.com/kantorv/markdown-localization"
+Issues = "https://github.com/kantorv/markdown-localization/issues"
+
+# The four subcommands, identical for a human and for CI.
+[project.scripts]
+cl10n = "cl10n.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cl10n"]
+# The suite tests *this repository* — the corpus under `md/`, the workflow
+# files, a throwaway git repo per test. None of that exists in an installed
+# environment, so shipping the tests would ship failures. `cl10n/fixtures/`
+# is a different thing and does ship: `compat_check` reads it at runtime.
+exclude = ["cl10n/tests"]
+
+[tool.hatch.build.targets.sdist]
+# The sdist carries the package plus what makes the checkout reproducible;
+# `md/`, `locales/` and `l10n/` are this repository's own corpus and its
+# translations, not part of the distribution.
+include = [
+  "cl10n",
+  "pyproject.toml",
+  "requirements.txt",
+  "README.md",
+  "LICENSE",
+]
+exclude = ["cl10n/tests"]

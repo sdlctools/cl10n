@@ -1,6 +1,6 @@
 """markdown-it-py ↔ mdformat compatibility drift detector.
 
-The pipeline's parser (`app/utils.make_parser`) is a *contract*, not a
+The pipeline's parser (`cl10n.core.utils.make_parser`) is a *contract*, not a
 convenience: every unit hash in every translation memory is taken over its
 output. The two libraries behind it evolve independently, and their
 disagreements have already cost this project twice — markdown-it-py grew
@@ -12,9 +12,9 @@ the detector. Run it in CI, and run it before accepting any upgrade of
 `markdown-it-py`, `mdformat`, `mdformat-gfm`, `mdformat-frontmatter` or
 `mdit-py-plugins`.
 
-    venv/bin/python3 cl10n/compat_check.py            # verify against the baseline
-    venv/bin/python3 cl10n/compat_check.py --json     # machine-readable
-    venv/bin/python3 cl10n/compat_check.py --update   # re-record (review the diff!)
+    venv/bin/python3 -m cl10n.compat_check            # verify against the baseline
+    venv/bin/python3 -m cl10n.compat_check --json     # machine-readable
+    venv/bin/python3 -m cl10n.compat_check --update   # re-record (review the diff!)
 
 Exit code 0 means no drift, 1 means drift was found, 2 means the check itself
 could not run.
@@ -41,7 +41,7 @@ could not run.
 
 The fixture rather than `md/**` is the subject, deliberately: the corpus
 changes when writers edit it, which would make the baseline churn and train
-everyone to re-record it without reading. `cl10n/tests/fixtures/kitchen-sink.md`
+everyone to re-record it without reading. `cl10n/fixtures/kitchen-sink.md`
 changes only when someone means to change it.
 """
 
@@ -53,18 +53,19 @@ import json
 import os
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
+import mdformat.plugins
+from markdown_it.tree import SyntaxTreeNode
+from mdformat.renderer import DEFAULT_RENDERERS
 
-from markdown_it.tree import SyntaxTreeNode  # noqa: E402
-from mdformat.renderer import DEFAULT_RENDERERS  # noqa: E402
-import mdformat.plugins  # noqa: E402
+from cl10n import resources
+from cl10n.core import tree_diff
+from cl10n.core.utils import ast_to_markdown, make_parser, markdown_to_ast
 
-import tree_diff  # noqa: E402
-from utils import ast_to_markdown, make_parser, markdown_to_ast  # noqa: E402
-
-BASELINE = os.path.join(_HERE, "compat-baseline.json")
-FIXTURE = os.path.join(_HERE, "tests", "fixtures", "kitchen-sink.md")
+# Both ship inside the wheel: the detector has to be runnable from an
+# installed package, in a directory that contains no checkout, or it cannot
+# vouch for what an installed user is actually parsing with.
+BASELINE = resources.path("compat-baseline.json")
+FIXTURE = resources.path("fixtures", "kitchen-sink.md")
 
 # Node types with no renderer of their own that are nonetheless safe, because
 # they are unreachable except under a parent whose renderer consumes the whole

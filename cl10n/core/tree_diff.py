@@ -27,8 +27,8 @@ Why LCS per level and not positional compare: inserting one paragraph shifts
 every following sibling. Positional comparison would mark the whole tail
 dirty; LCS over the children's hashes recovers the alignment exactly.
 
-Run:  venv/bin/python3 app/tree_diff.py            # demo on the sample doc
-      venv/bin/python3 app/tree_diff.py a.md b.md
+Run:  venv/bin/python3 -m cl10n.core.tree_diff            # demo on the sample doc
+      venv/bin/python3 -m cl10n.core.tree_diff a.md b.md
 """
 
 from __future__ import annotations
@@ -40,11 +40,9 @@ import sys
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from markdown_it.tree import SyntaxTreeNode
 
-from utils import ast_to_markdown, markdown_to_ast
+from cl10n.core.utils import ast_to_markdown, markdown_to_ast
 
 # ---------------------------------------------------------------------------
 # Node classification
@@ -347,7 +345,7 @@ def _heading_trail(node: SyntaxTreeNode) -> str:
 # translates it produces a blockquote that merely *looks* like one. They are
 # plain text in the token stream — the parser is configured to read alerts as
 # ordinary blockquotes, because mdformat cannot render the dedicated `alert`
-# nodes at all (see `app/utils.py`) — so nothing else here would protect them.
+# nodes at all (see `cl10n/core/utils.py`) — so nothing else here would protect them.
 _ALERT_MARKER = re.compile(r"\[!(?:NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]")
 
 
@@ -508,8 +506,9 @@ def tm_keys(md: str) -> dict[str, str]:
 # Demo
 # ---------------------------------------------------------------------------
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-SAMPLE = os.path.join(HERE, "..", "md", "skills", "_shared", "templates",
+# A document from the checkout you are standing in, not one shipped in the
+# wheel — this is demo scaffolding for `python -m cl10n.core.tree_diff`.
+SAMPLE = os.path.join("md", "skills", "_shared", "templates",
                       "review-report.md")
 
 
@@ -561,7 +560,7 @@ def main() -> None:
         old_md = open(sys.argv[1], encoding="utf-8").read()
         new_md = open(sys.argv[2], encoding="utf-8").read()
     else:
-        sys.exit(f"usage: {os.path.basename(sys.argv[0])} OLD.md NEW.md")
+        sys.exit("usage: python3 -m cl10n.core.tree_diff OLD.md NEW.md")
 
     items = plan(old_md, new_md)
 

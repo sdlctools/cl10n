@@ -1,49 +1,28 @@
-# The parsing stack is PINNED EXACTLY, and that is not fussiness.
+# A thin pointer at pyproject.toml — the dependencies themselves live there.
 #
-# Every unit hash in every `l10n/tm/<lang>.json` is taken over the output of
-# `app/utils.make_parser`, which is these five packages in a specific
-# configuration. A minor upgrade can (and twice already did) change what the
-# parser emits:
+# This installs the package in editable mode with every provider SDK and the
+# test dependencies: the contributor setup, and what CI installs.
 #
-#   * markdown-it-py 4.2 began parsing task lists natively, emitting no
-#     checkbox token — mdformat's list renderer asserts on the missing token,
-#     so every document containing `- [ ]` raised.
-#   * the same release began parsing GitHub alerts into `alert` nodes, which
-#     mdformat cannot render at all — `KeyError: 'alert'`.
+#     python -m venv venv
+#     venv/bin/pip install -r requirements.txt
 #
-# A change that does not raise is worse: it silently alters the canonical form,
-# every hash moves, and the next run re-translates the entire corpus at full
-# price while orphaning the existing memory.
+# A *consumer* does not use this file. They install from PyPI and take only
+# the provider they route to:
 #
-# So: upgrade these deliberately, one at a time, and run the drift detector.
+#     pip install cl10n[groq]
 #
-#     venv/bin/python3 cl10n/compat_check.py
+# WHERE THE PINS WENT, AND WHY THEY ARE PINS: the parsing stack
+# (markdown-it-py, mdit-py-plugins, mdformat, mdformat-gfm,
+# mdformat-frontmatter, linkify-it-py) is pinned EXACTLY in
+# `pyproject.toml`'s `[project] dependencies`, with the full rationale in the
+# comment directly above it. The short version: every unit hash in every
+# translation memory is taken over that exact configuration, so a silent
+# change in what the parser emits re-translates the whole corpus at full
+# price. Read that comment before moving a pin, and run the drift detector:
 #
-# It compares the parser's option surface, its renderable node types and the
-# canonical form of `cl10n/tests/fixtures/kitchen-sink.md` against
-# `cl10n/compat-baseline.json`. Green means the upgrade is safe to take; re-record
-# with `--update` only when you have read the diff and understood every line.
-markdown-it-py==4.2.0
-mdit-py-plugins==0.6.1
-mdformat==1.0.0
-mdformat-gfm==1.0.0
-mdformat-frontmatter==2.1.2
-linkify-it-py==2.1.0
+#     venv/bin/python3 -m cl10n.compat_check
+#
+# The provider SDKs (groq, openai, mistralai) are NOT part of that contract —
+# they never touch a hash — so they are unpinned extras and upgrade freely.
 
-# Not part of the hashing contract — ordinary dependencies, upgrade freely.
-# One per provider connector in cl10n/providers/; connectors import them
-# lazily, so a library you never route to is only a install-time cost.
-# groq     : the original provider (default connector).
-# openai   : used by the NVIDIA connector against NVIDIA's OpenAI-compatible
-#            endpoint; OpenAI-compatible base_url, no OpenAI account needed.
-# mistralai: the Mistral connector. Note 2.x moved the client to
-#            `mistralai.client` — `from mistralai import Mistral` fails.
-groq
-openai
-mistralai
-
-# tests
-pytest
-pytest-asyncio
-jsonschema
-pyyaml
+-e .[dev]

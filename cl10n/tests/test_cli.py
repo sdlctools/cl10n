@@ -31,19 +31,16 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 
 import jsonschema
 import pytest
 
-CL10N = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(CL10N)
-sys.path[:0] = [CL10N, os.path.join(REPO, "app")]
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import cli  # noqa: E402
-import manifest as manifest_mod  # noqa: E402
-import tree_diff  # noqa: E402
-from queue_runner import QueueRunner  # noqa: E402
+from cl10n import cli  # noqa: E402
+from cl10n import manifest as manifest_mod  # noqa: E402
+from cl10n.core import tree_diff  # noqa: E402
+from cl10n.queue_runner import QueueRunner  # noqa: E402
 
 CORPUS = os.path.join(REPO, "md")
 

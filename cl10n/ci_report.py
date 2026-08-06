@@ -7,7 +7,7 @@ to English). A missing input is reported as missing rather than failing the
 step: the PR that says "run interrupted, 40 jobs still queued" is exactly the
 one that most needs a body.
 
-    venv/bin/python3 cl10n/ci_report.py --plan plan.json --queue l10n/queue/queue.json \
+    venv/bin/python3 -m cl10n.ci_report --plan plan.json --queue l10n/queue/queue.json \
         --render render.json -o pr-body.md
 
 No provider, no network, no secrets — safe to run in any step.
@@ -18,11 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 from collections import Counter
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
 
 
 def _load(path: str | None) -> dict | None:

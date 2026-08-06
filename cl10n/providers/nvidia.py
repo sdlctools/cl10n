@@ -31,42 +31,15 @@ importable without `NVIDIA_NIM_API_KEY` (CI imports connectors to inspect them).
 
 from __future__ import annotations
 
-import importlib.util
 import os
-import sys
 
-
-def _load_sibling(name: str, path: str):
-    """Import a module from an explicit file path, once, by cache key.
-
-    Inlined in each connector rather than shared, because a shared helper would
-    itself have to be imported by name — the problem this solves. The cache key
-    is shared with the other connectors, so `base` is executed once per process.
-    """
-    key = f"_cl10n_providers_{name}"
-    if key in sys.modules:
-        return sys.modules[key]
-    spec = importlib.util.spec_from_file_location(key, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[key] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_CL10N = os.path.dirname(_HERE)
-_APP = os.path.join(os.path.dirname(_CL10N), "app")
-# `app/`'s modules are bare on the path (scripts-in-a-directory convention).
-sys.path[:0] = [_APP]
-
-# Loaded from an explicit file path so this resolves identically however the
-# connector was reached — script run, registry import, or pytest collection.
-_base = _load_sibling("base", os.path.join(_HERE, "base.py"))
-Failure = _base.Failure
-_message = _base._message
-_retry_after = _base._retry_after
-_base_classify = _base.classify
-extract_translation = _base.extract_translation
+from cl10n.providers.base import (
+    Failure,
+    _message,
+    _retry_after,
+    extract_translation,
+)
+from cl10n.providers.base import classify as _base_classify
 
 # The OpenAI-compatible base URL for NVIDIA's hosted endpoint (AC4).
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"

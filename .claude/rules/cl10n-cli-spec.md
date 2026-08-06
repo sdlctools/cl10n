@@ -24,11 +24,11 @@ run the same four subcommands — there is no CI-only code path.
 ## Use it
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan   --langs he,ru        # manifest + git → queue
-venv/bin/python3 cl10n/cli.py run    l10n/queue/queue.json -c 8
-venv/bin/python3 cl10n/cli.py run    QUEUE --provider nvidia          # pass-through
-venv/bin/python3 cl10n/cli.py render --langs he,ru        # TM → locales/ + manifest
-venv/bin/python3 cl10n/cli.py status --langs he,ru        # coverage per language
+venv/bin/cl10n plan   --langs he,ru        # manifest + git → queue
+venv/bin/cl10n run    l10n/queue/queue.json -c 8
+venv/bin/cl10n run    QUEUE --provider nvidia          # pass-through
+venv/bin/cl10n render --langs he,ru        # TM → locales/ + manifest
+venv/bin/cl10n status --langs he,ru        # coverage per language
 ```
 
 First-time translation **is** an incremental update whose step 3 recovers

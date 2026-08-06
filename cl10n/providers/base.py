@@ -15,9 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-import sys
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -25,8 +23,7 @@ from typing import Protocol
 # cycle) — `base` may import it. The timestamp is part of the error record
 # the queue schema requires, so `as_error` must produce it identically to
 # how the (pre-CLN-1) runner's `Failure` did.
-sys.path[:0] = [os.path.dirname(os.path.dirname(os.path.abspath(__file__)))]
-from l10n_store import utc_now  # noqa: E402
+from cl10n.l10n_store import utc_now
 
 
 @dataclass(frozen=True)

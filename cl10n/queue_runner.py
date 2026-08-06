@@ -6,9 +6,9 @@ keep the file on disk an accurate picture of progress at all times. It does not
 decide *what* to translate (that is `tree_diff.plan`) and does not turn
 translations back into Markdown (that is reassembly).
 
-    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json
-    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run
-    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --concurrency 8
+    venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json
+    venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json --dry-run
+    venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json --concurrency 8
 
 Three things carry the design, all from spec §4:
 
@@ -54,17 +54,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-# This package plus `app/`, which owns the prompt (`prompt`, `groq_api`) and
-# the planner (`tree_diff`). `cl10n/providers/` (the registry and connectors)
-# is reached as a package import below. Bare scripts rather than an installed
-# package is the repo's existing convention — see `app/tree_diff.py`.
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
-
-import prompt as prompt_mod  # noqa: E402  (app/ — the provider-agnostic prompt + PROMPT_VERSION)
-from l10n_store import TranslationMemory, load_queue, save_queue, utc_now  # noqa: E402
-from placeholders import describe as _describe_lost  # noqa: E402
-from placeholders import lost_placeholders  # noqa: E402
+from cl10n.core import prompt as prompt_mod  # the provider-agnostic prompt + PROMPT_VERSION
+from cl10n.l10n_store import TranslationMemory, load_queue, save_queue, utc_now
+from cl10n.placeholders import describe as _describe_lost
+from cl10n.placeholders import lost_placeholders
 
 TERMINAL_STATES = {"done", "rejected"}
 
@@ -102,14 +95,14 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 # connector whose translator is in use), and falls back to this one when a
 # translator is injected directly (tests, `--dry-run`).
 
-from providers.base import (  # noqa: E402,F401  (_message/_retry_after: re-export only)
+from cl10n.providers.base import (  # noqa: E402,F401  (_message/_retry_after: re-export only)
     Failure,
     Translator,
     _message,
     _retry_after,
     extract_translation,
 )
-from providers.groq import GroqTranslator, classify  # noqa: E402
+from cl10n.providers.groq import GroqTranslator, classify  # noqa: E402
 
 # The default-classifier alias is the default provider's (Groq), so a
 # `QueueRunner` constructed by a test with an injected translator falls back to
@@ -210,7 +203,7 @@ def build_prompt(job: dict, lost: list[str] | None = None) -> str:
     which is why `PROMPT_VERSION` stays where it is.
 
     The prompt template and `PROMPT_VERSION` are provider-agnostic
-    (`app/prompt.py`, moved out of the Groq connector in CLN-1): every
+    (`cl10n/core/prompt.py`, moved out of the Groq connector in CLN-1): every
     connector sends identical rules, so a TM shortcut fires across providers.
     """
     lang_name = prompt_mod.LANG_NAMES.get(job["lang"], job["lang"])
@@ -551,7 +544,7 @@ class QueueRunner:
 # CLI
 # --------------------------------------------------------------------------
 
-from providers import (  # noqa: E402
+from cl10n.providers import (  # noqa: E402
     build_translator,
     get_classify,
     load_creds_file,

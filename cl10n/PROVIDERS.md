@@ -31,12 +31,12 @@ EOF
 grep -q 'creds' .gitignore || echo '*creds*.txt' >> .gitignore
 
 # 4. prove it resolves without a key or a network call
-venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json \
+venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json \
   --provider acme --dry-run
 
 # 5. spend one cent
 echo 'ACME_API_KEY="..."' > acme-creds.txt
-venv/bin/python3 cl10n/cli.py run --provider acme -c 1
+venv/bin/cl10n run --provider acme -c 1
 ```
 
 Nothing else in the pipeline changes. No runner edit, no CLI edit, no test edit
@@ -223,31 +223,38 @@ The runner holds a `Translator` and a `classify` and knows nothing else. If a
 change requires an `if provider == "acme"` anywhere outside `cl10n/providers/`,
 the difference belongs **inside your connector** instead.
 
-### The trap — a connector must never be imported by module name
+### The former trap — a connector sharing its SDK's name
 
-`cl10n/providers/groq.py` and the `groq` PyPI package share the top-level name
-`groq`. That collision bites in two directions, and both cost real debugging
-time during CLN-1:
+`cl10n/providers/groq.py` and the `groq` PyPI package share a leaf name, and
+before `cl10n` was a package that collision bit in two directions and cost
+real debugging time during CLN-1. Both were top-level modules competing for
+one entry in `sys.modules`: putting `cl10n/providers/` on `sys.path` made
+`import groq` *inside the connector* find the connector itself, and resolving
+the connector with `importlib.import_module("groq")` returned the *library*
+(already imported for its exception taxonomy), giving the memorable
+`module 'groq' has no attribute 'GroqTranslator'`.
 
-1. **Putting `cl10n/providers/` on `sys.path`** makes `import groq` *inside the
-   connector* find the connector itself — a circular import that only surfaces
-   at first use.
-2. **Resolving the connector with `importlib.import_module("groq")`** returns the
-   *library*, because `queue_runner` has already imported it for its exception
-   taxonomy, so it is always in `sys.modules`. The symptom is
-   `module 'groq' has no attribute 'GroqTranslator'`.
+**The package layout ended it, and you inherit the fix by doing nothing
+special.** Python 3's absolute-import rule means `import groq` inside
+`cl10n.providers.groq` is unambiguously the top-level library, while the
+connector is only ever reachable as `cl10n.providers.groq`. The two names
+cannot alias. So a connector named after its SDK is now ordinary:
 
-Both are solved the same way and it is already done for you: **connector modules
-and `base` are loaded from an explicit file path** under a `_cl10n_providers_*`
-module key. So:
+```python
+import acme                                    # the SDK — the real one
+from cl10n.providers.base import Failure, extract_translation
+```
 
-- reach `base` the way the shipped connectors do (copy their header verbatim);
-- do **not** add the providers directory to `sys.path`;
-- do **not** "simplify" the registry's loader back to `import_module`.
-  `test_providers.py` has a regression test that fails if you do.
+What this means for you:
 
-If your provider's SDK has a name that cannot collide, this costs you nothing —
-follow the same pattern anyway, so the next connector inherits it.
+- import `base` and your SDK as plain absolute imports, exactly as the three
+  shipped connectors do;
+- do **not** reintroduce `sys.path` mutation or `spec_from_file_location`
+  loading — they were a workaround for a problem the layout removed;
+- keep the registry resolving bare connector names against
+  `cl10n.providers.<name>`. `test_providers.py` pins this: it imports the real
+  `groq` library first, then asserts the registry still builds the connector
+  *and* that the connector's own `groq` attribute is the library.
 
 ______________________________________________________________________
 
@@ -257,7 +264,7 @@ ______________________________________________________________________
   runner already takes a `classify` parameter and a `Translator`.
 - **Do not edit `cl10n/cli.py`.** `run` is a verbatim pass-through; your flags
   reach the runner untouched.
-- **Do not add a second definition of the prompt.** `app/prompt.py` owns
+- **Do not add a second definition of the prompt.** `cl10n/core/prompt.py` owns
   `TRANSLATION_PROMPT`, `PROMPT_VERSION` and `LANG_NAMES`, and they are
   deliberately provider-agnostic — see [section 7](#7-the-prompt-is-shared-on-purpose).
 - **Do not bump `PROMPT_VERSION`** because you added a provider. The rules did
@@ -302,8 +309,8 @@ venv/bin/python3 -m pytest -q
 Stubs prove the wiring; only a real call proves the provider. Spend a few cents:
 
 ```bash
-venv/bin/python3 cl10n/cli.py run --provider acme --dry-run   # confirm the count
-venv/bin/python3 cl10n/cli.py run --provider acme -c 1        # a tiny queue
+venv/bin/cl10n run --provider acme --dry-run   # confirm the count
+venv/bin/cl10n run --provider acme -c 1        # a tiny queue
 ```
 
 Check three things in the resulting `l10n/tm/<lang>.json`:
@@ -341,7 +348,7 @@ ______________________________________________________________________
 
 ## 7. The prompt is shared on purpose
 
-Every connector sends the identical prompt from `app/prompt.py` and records the
+Every connector sends the identical prompt from `cl10n/core/prompt.py` and records the
 identical `PROMPT_VERSION`. The translation memory is keyed by content hash plus
 prompt version — **not by provider** — so a unit translated by one provider is
 reused by a run routed to another.

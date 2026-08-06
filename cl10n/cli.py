@@ -3,10 +3,10 @@
 One entry point with four subcommands, so a human and a CI job drive the
 *same* code path rather than two implementations that agree until they don't:
 
-    venv/bin/python3 cl10n/cli.py plan   --langs he,ru
-    venv/bin/python3 cl10n/cli.py run    l10n/queue/queue.json -c 8
-    venv/bin/python3 cl10n/cli.py render --langs he,ru
-    venv/bin/python3 cl10n/cli.py status --langs he,ru
+    venv/bin/cl10n plan   --langs he,ru
+    venv/bin/cl10n run    l10n/queue/queue.json -c 8
+    venv/bin/cl10n render --langs he,ru
+    venv/bin/cl10n status --langs he,ru
 
 `plan` is step 3-6 of `.claude/rules/l10n-pipeline-spec.md` — the real enqueue
 step: recover each document's last-localized revision through the manifest and
@@ -60,19 +60,15 @@ import json
 import os
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-# Bare scripts in a directory rather than an installed package — the repo's
-# existing convention, see `cl10n/queue_runner.py` and `cl10n/reassemble.py`.
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
+from markdown_it.tree import SyntaxTreeNode
 
-from markdown_it.tree import SyntaxTreeNode  # noqa: E402
-
-import prompt as prompt_mod  # noqa: E402  (app/ — PROMPT_VERSION; provider-agnostic)
-import manifest as manifest_mod  # noqa: E402
-import queue_runner  # noqa: E402
-import reassemble  # noqa: E402
-import tree_diff  # noqa: E402
-from l10n_store import (  # noqa: E402
+from cl10n import manifest as manifest_mod
+from cl10n import queue_runner
+from cl10n import reassemble
+from cl10n.core import prompt as prompt_mod  # PROMPT_VERSION; provider-agnostic
+from cl10n.core import tree_diff
+from cl10n.core.utils import markdown_to_ast
+from cl10n.l10n_store import (
     TranslationMemory,
     atomic_write_text,
     new_job,
@@ -81,7 +77,6 @@ from l10n_store import (  # noqa: E402
     save_queue,
     utc_now,
 )
-from utils import markdown_to_ast  # noqa: E402
 
 DEFAULT_MD_ROOT = "md"
 DEFAULT_TM_DIR = "l10n/tm"
@@ -101,10 +96,16 @@ ACTION_ORDER = ("TRANSLATE", "REVISE", "RECHECK", "REUSE", "COPY", "RETIRE")
 
 
 def repo_root(start: str | None = None) -> str:
-    """The git worktree root, falling back to this file's parent directory."""
+    """The git worktree root, falling back to the working directory.
+
+    The fallback is what happens outside a git repository, where the pipeline
+    still runs (it just never gets the `REVISE` path — see
+    `INTEGRATION.md` §9). It has to be the *corpus's* directory, not this
+    module's: `cl10n` is installed, so this file's parent is `site-packages`.
+    """
     out = manifest_mod._git(start or os.getcwd(), "rev-parse", "--show-toplevel")
     root = (out or "").strip()
-    return root or os.path.dirname(_HERE)
+    return root or os.path.abspath(start or os.getcwd())
 
 
 def corpus(sources, md_root: str) -> list[str]:
