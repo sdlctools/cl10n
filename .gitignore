@@ -11,12 +11,16 @@ l10n/queue/
 
 # Local provider credentials — read by cl10n/queue_runner.py via each
 # provider's `api_key_creds_file` in cl10n/providers.toml (or --creds-file).
-# Both separators, because a real key already turned up as
-# `nvidia-nim-creds.txt` while only `*_creds.txt` was ignored.
-*creds*.txt
-*_creds.txt
-*-creds.txt
+#
+# Deliberately wide, and every widening here was a near-miss rather than
+# caution: `nvidia-nim-creds.txt` arrived while only `*_creds.txt` was ignored,
+# and editing a creds file left a `.mistral-creds.txt.swp` holding the key in
+# plain text that no `*.txt` pattern matches. Anything whose name says "creds"
+# is ignored whatever its extension, editor swap and backup files included.
+*creds*
+.*creds*
 groq_creds.txt
 nvidia-nim-creds.txt
+mistral-creds.txt
 
 .pytest_cache/

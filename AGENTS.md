@@ -74,9 +74,10 @@ venv/bin/python3 cl10n/build_queue.py --langs he,ru -o l10n/queue/queue.json
 
 **Providers are pluggable and declared in `cl10n/providers.toml`** — a name,
 its connector module, default model, and the env var (plus optional gitignored
-creds file) its key comes from. Groq is the default (`GROQ_API_KEY`, or
-`groq_creds.txt`); NVIDIA ships too (`NVIDIA_NIM_API_KEY`, the `openai` library
-against `https://integrate.api.nvidia.com/v1`). `--provider` selects one, and a
+creds file) its key comes from. Three ship: Groq is the default
+(`GROQ_API_KEY`), NVIDIA uses the `openai` library against
+`https://integrate.api.nvidia.com/v1` (`NVIDIA_NIM_API_KEY`), and Mistral uses
+its own `mistralai` SDK (`MISTRAL_API_KEY`). `--provider` selects one, and a
 `provider:model` prefix on `--model` both selects and sets the model; with
 neither, behavior is exactly as before. Each connector lives in its own module
 under `cl10n/providers/` and brings its own client and exception mapping, so

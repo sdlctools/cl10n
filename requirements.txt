@@ -30,12 +30,17 @@ mdformat-gfm==1.0.0
 mdformat-frontmatter==2.1.2
 linkify-it-py==2.1.0
 
-# Not part of the hashing contract — ordinary dependency, upgrade freely.
-# groq: the original provider (default connector).
-# openai: used by the NVIDIA connector against NVIDIA's OpenAI-compatible
-#         endpoint (CLN-1); OpenAI-compatible base_url, no OpenAI account needed.
+# Not part of the hashing contract — ordinary dependencies, upgrade freely.
+# One per provider connector in cl10n/providers/; connectors import them
+# lazily, so a library you never route to is only a install-time cost.
+# groq     : the original provider (default connector).
+# openai   : used by the NVIDIA connector against NVIDIA's OpenAI-compatible
+#            endpoint; OpenAI-compatible base_url, no OpenAI account needed.
+# mistralai: the Mistral connector. Note 2.x moved the client to
+#            `mistralai.client` — `from mistralai import Mistral` fails.
 groq
 openai
+mistralai
 
 # tests
 pytest

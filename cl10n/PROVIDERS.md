@@ -145,6 +145,37 @@ times.
 with any httpx-based SDK. If your library exposes the wait somewhere else, return
 it yourself — the runner floors its backoff with whatever you provide.
 
+### Do not assume your SDK looks like groq's
+
+`groq` and `openai` share an exception hierarchy (groq's SDK is a fork), so the
+first two connectors look almost identical. The third did not, and each
+difference below was a real bug caught only by inspecting the installed package:
+
+- **One error class instead of a hierarchy.** `mistralai` raises a single
+  `SDKError` for every HTTP failure, so its `classify` branches on
+  `status_code` rather than on the exception type.
+- **`Retry-After` in a different place.** `SDKError` exposes `headers` and
+  `raw_response` but **no `.response`** — so the shared `_retry_after` silently
+  returns `None` and the connector must read the header itself. A test asserts
+  the shared helper cannot see it, so the reason the override exists survives.
+- **Transport errors that `base.classify` gets wrong.** Raw `httpx` exceptions
+  (`ConnectError`, `ReadTimeout`, `RemoteProtocolError`) are **not** `OSError`
+  subclasses, so the generic tail classifies them as terminal `api_error` and
+  the job is rejected on its first blip. If your SDK lets httpx errors escape,
+  match `httpx.TimeoutException` and `httpx.TransportError` explicitly.
+- **A reply that is not a plain string.** Mistral's `content` is
+  `Union[str, List[ContentChunk]]`. Passing a chunk list to
+  `extract_translation` stores a Python repr in the translation memory —
+  which renders as garbage and passes every other check. Flatten first.
+- **A moved import path.** `mistralai` 2.x put the client at
+  `mistralai.client`; `from mistralai import Mistral` raises. Check the
+  installed package rather than trusting a README snippet.
+
+The lesson generalises: **read the installed SDK, do not pattern-match on
+`groq.py`.** `venv/bin/python3 -c "import x; help(x)"` and
+`inspect.signature` answer these in a minute, and each one is a rejected job or
+a corrupted memory entry if you guess.
+
 ______________________________________________________________________
 
 ## 3. Declaring it in `providers.toml`
@@ -348,5 +379,22 @@ ______________________________________________________________________
 - [ ] tests added; **full suite passes with no key and no network**
 - [ ] one real API call verified: target language, placeholder intact, provenance right
 - [ ] cross-provider TM reuse confirmed (0 API calls on a re-run via another provider)
-- [ ] CI secret added to the one Execute step
+- [ ] CI secret added to the one Execute step (a test asserts every declared
+      provider's `api_key_env` is wired there)
 - [ ] `queue_runner.py` and `cli.py` **untouched**
+
+______________________________________________________________________
+
+## 10. Worked example: the three shipped connectors
+
+The fastest way to write the fourth is to read the three that exist, in this
+order — they are deliberately different from each other:
+
+| Connector | SDK | What it demonstrates |
+| --- | --- | --- |
+| `groq.py` | `groq` | the baseline: per-status exception classes, `response_format` JSON mode, a lazy client |
+| `nvidia.py` | `openai` | an OpenAI-compatible endpoint via `base_url`; **no** `response_format`, because not every NIM model accepts JSON mode |
+| `mistral.py` | `mistralai` | a native SDK that resembles neither: one `SDKError`, `Retry-After` in a non-standard place, httpx errors escaping, and a `content` union |
+
+`mistral.py` is the one to copy if your provider has its own SDK; `nvidia.py` if
+it is OpenAI-compatible.

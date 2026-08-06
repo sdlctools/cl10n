@@ -8,8 +8,8 @@ provider. Where something is a caveat rather than a step, it is because it bit
 during that run.
 
 For the day-to-day interface once you are set up, see
-[`USERGUIDE.md`](USERGUIDE.md). To point the pipeline at an LLM API that is not
-Groq or NVIDIA, see [`PROVIDERS.md`](PROVIDERS.md).
+[`USERGUIDE.md`](USERGUIDE.md). To point the pipeline at an LLM API none of the
+shipped connectors covers, see [`PROVIDERS.md`](PROVIDERS.md).
 
 ______________________________________________________________________
 
@@ -103,11 +103,13 @@ mdformat-frontmatter==2.1.2
 linkify-it-py==2.1.0
 groq
 openai
+mistralai
 ```
 
-`groq` and `openai` are the provider client libraries — `openai` is what the
-NVIDIA connector uses against an OpenAI-compatible endpoint, not an OpenAI
-account. Neither is pinned: they never touch a hash, so they upgrade freely.
+`groq`, `openai` and `mistralai` are the provider client libraries, one per
+connector — `openai` is what the NVIDIA connector uses against an
+OpenAI-compatible endpoint, not an OpenAI account. None of them is pinned: they
+never touch a hash, so they upgrade freely.
 You only need the library for the providers you actually use; connectors are
 imported lazily, so dropping one you never route to is safe (delete its entry
 from `providers.toml` too, or `--provider` will offer a connector that cannot
@@ -152,18 +154,24 @@ Add to `.gitignore`:
 venv/
 __pycache__/
 l10n/queue/          # per-run state, never committed
-*creds*.txt          # provider keys — both separators, see below
+*creds*              # provider keys — no extension filter, see below
 ```
 
-Both entries matter. A committed queue file ships transient state and causes
-exactly the merge conflicts the per-language memory files are designed to
+The last two matter most. A committed queue file ships transient state and
+causes exactly the merge conflicts the per-language memory files are designed to
 avoid, and a committed key is a leaked key.
 
 **Use a wide glob for the key files, not one filename per provider.** Each
 provider declares its own creds file in `providers.toml`, and their names do not
-share a separator — `groq_creds.txt` but `nvidia-nim-creds.txt`. A pattern
-matching only one of those leaves the other untracked but *unignored*, which is
-one `git add -A` away from publishing a key. This happened during development.
+share a separator — `groq_creds.txt`, but `nvidia-nim-creds.txt` and
+`mistral-creds.txt`. A pattern matching only one style leaves the others
+untracked but *unignored*, which is one `git add -A` away from publishing a key.
+
+**And do not filter on `.txt`.** Editing a creds file leaves
+`.mistral-creds.txt.swp` — a vim swap file holding the key in plain text that no
+`*.txt` pattern matches. Both of these were near-misses during development,
+which is why the pattern is just `*creds*`. Verify with
+`git check-ignore -v <file>` rather than assuming.
 
 **Your project must be a git repository.** The pipeline recovers each
 document's previously localized revision through `git cat-file blob`. Without

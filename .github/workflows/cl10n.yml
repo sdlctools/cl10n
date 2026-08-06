@@ -207,6 +207,7 @@ jobs:
           MODEL: ${{ github.event.inputs.model || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
         run: |
           args=(venv/bin/python3 cl10n/cli.py run "$QUEUE" -c 8)
           [ -n "$PROVIDER" ] && args+=(--provider "$PROVIDER")

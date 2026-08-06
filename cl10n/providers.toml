@@ -42,3 +42,11 @@ default_model        = "nvidia/nemotron-3-ultra-550b-a55b"
 api_key_env         = "NVIDIA_NIM_API_KEY"
 api_key_creds_file  = "nvidia-nim-creds.txt"
 base_url            = "https://integrate.api.nvidia.com/v1"
+
+# Mistral — its own SDK (mistralai), not an OpenAI-compatible endpoint.
+# No base_url: the SDK targets api.mistral.ai by default.
+[providers.mistral]
+connector           = "mistral:MistralTranslator"
+default_model        = "mistral-large-latest"
+api_key_env         = "MISTRAL_API_KEY"
+api_key_creds_file  = "mistral-creds.txt"

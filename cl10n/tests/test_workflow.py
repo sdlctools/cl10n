@@ -85,9 +85,29 @@ def test_the_provider_secret_reaches_exactly_one_step(steps):
     """
     holders = [
         step["name"] for step in steps
-        if any(k in str(step.get("env", {})) for k in ("GROQ_API_KEY", "NVIDIA_NIM_API_KEY"))
+        if any(k in str(step.get("env", {}))
+               for k in ("GROQ_API_KEY", "NVIDIA_NIM_API_KEY", "MISTRAL_API_KEY"))
     ]
     assert holders == ["Execute the queue"]
+
+
+def test_every_declared_provider_has_its_secret_wired(steps):
+    """A provider in `providers.toml` whose key never reaches CI is a trap.
+
+    It works locally (creds file), then every CI run rejects every job with an
+    auth error the moment someone routes to it. Cheap to assert, so assert it.
+    """
+    import tomllib
+
+    with open(os.path.join(REPO, "cl10n", "providers.toml"), "rb") as fh:
+        declared = tomllib.load(fh)["providers"]
+    execute = next(s for s in steps if s["name"] == "Execute the queue")
+    env = execute.get("env", {})
+    for name, cfg in declared.items():
+        assert cfg["api_key_env"] in env, (
+            f"provider {name!r} declares {cfg['api_key_env']} but the Execute "
+            f"step does not pass it"
+        )
 
 
 def test_no_fork_triggered_event_can_reach_the_secret(triggers):

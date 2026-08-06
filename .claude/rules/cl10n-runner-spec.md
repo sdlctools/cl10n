@@ -243,6 +243,7 @@ cl10n/providers/
                          build_translator, get_classify, load_creds_file
     groq.py              GroqTranslator + classify (the groq taxonomy)
     nvidia.py            NvidiaTranslator + classify (the openai taxonomy)
+    mistral.py           MistralTranslator + classify (the mistralai SDK)
 ```
 
 A provider declares: `connector` (`module:Class`), `default_model`,

@@ -50,6 +50,7 @@ from providers import (  # noqa: E402
     resolve_route,
 )
 from providers import nvidia as nvidia_mod  # noqa: E402
+from providers.base import _retry_after as _base_retry_after  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -60,7 +61,7 @@ from providers import nvidia as nvidia_mod  # noqa: E402
 def test_the_registry_loads_every_declared_provider():
     r = load_registry()
     assert r.default == "groq"
-    assert set(r.names()) == {"groq", "nvidia"}
+    assert set(r.names()) == {"groq", "nvidia", "mistral"}
 
 
 def test_each_provider_declares_its_key_env_and_default_model_ac2():
@@ -76,6 +77,13 @@ def test_each_provider_declares_its_key_env_and_default_model_ac2():
     assert nvidia.api_key_env == "NVIDIA_NIM_API_KEY"
     assert nvidia.base_url == "https://integrate.api.nvidia.com/v1"
     assert nvidia.default_model  # non-empty
+
+    mistral = r.get("mistral")
+    assert mistral.connector == "mistral:MistralTranslator"
+    assert mistral.api_key_env == "MISTRAL_API_KEY"
+    assert mistral.api_key_creds_file == "mistral-creds.txt"
+    assert mistral.base_url is None  # the mistralai SDK targets its own host
+    assert mistral.default_model  # non-empty
 
 
 def test_a_third_provider_is_a_config_change_plus_a_connector_module_ac2(tmp_path):
@@ -314,3 +322,128 @@ def test_load_creds_file_missing_file_is_a_noop(monkeypatch):
     monkeypatch.delenv("NVIDIA_NIM_API_KEY", raising=False)
     load_creds_file("does/not/exist", "NVIDIA_NIM_API_KEY")
     assert os.environ.get("NVIDIA_NIM_API_KEY") is None
+
+
+# --------------------------------------------------------------------------
+# Mistral connector (its own SDK, not an OpenAI-compatible endpoint)
+# --------------------------------------------------------------------------
+#
+# Mistral is the first connector whose SDK is not a groq/openai lookalike, so
+# these cover the three places it genuinely differs: one SDKError instead of a
+# class hierarchy, Retry-After on the error's own headers rather than a
+# `.response`, and a content field that may be a chunk list rather than a str.
+
+from providers import mistral as mistral_mod  # noqa: E402
+
+_MISTRAL_REQUEST = httpx.Request("POST", "https://api.mistral.ai/v1/chat/completions")
+
+
+def _sdk_error(status: int, headers: dict | None = None, message: str = "boom"):
+    """A real `mistralai` SDKError — so `classify` is tested, not mocked."""
+    from mistralai.client import errors as mistral_errors
+
+    response = httpx.Response(status, headers=headers or {}, request=_MISTRAL_REQUEST)
+    return mistral_errors.SDKError(message, raw_response=response, body="")
+
+
+@pytest.mark.parametrize("exc,kind,retryable", [
+    (_sdk_error(429), "rate_limit", True),
+    (_sdk_error(500), "api_error", True),
+    (_sdk_error(503), "api_error", True),
+    (_sdk_error(408), "api_error", True),
+    (_sdk_error(409), "api_error", True),
+    (_sdk_error(401), "api_error", False),
+    (_sdk_error(403), "api_error", False),
+    (_sdk_error(400), "api_error", False),
+    (_sdk_error(404), "api_error", False),
+    (_sdk_error(422), "api_error", False),
+    # httpx transport errors are NOT OSError subclasses, so the generic tail
+    # in base.classify would call them terminal. They must be caught here.
+    (httpx.ConnectError("connection refused", request=_MISTRAL_REQUEST), "network", True),
+    (httpx.ReadTimeout("timed out", request=_MISTRAL_REQUEST), "network", True),
+    (httpx.RemoteProtocolError("peer closed", request=_MISTRAL_REQUEST), "network", True),
+    (asyncio.TimeoutError(), "network", True),
+    (ConnectionResetError("reset by peer"), "network", True),
+    (ValueError("bug in our own code"), "api_error", False),
+])
+def test_mistral_classify(exc, kind, retryable):
+    failure = mistral_mod.classify(exc)
+    assert failure.kind == kind
+    assert failure.retryable is retryable
+
+
+def test_mistral_classify_reads_retry_after_from_the_errors_own_headers():
+    """SDKError has `headers`/`raw_response` but no `.response`.
+
+    `base._retry_after` looks for `exc.response.headers` and so finds nothing
+    for Mistral — the connector supplies its own reader. If that regressed, a
+    429 would fall back to our own backoff and ignore the server's wait.
+    """
+    exc = _sdk_error(429, headers={"retry-after": "37"})
+    assert _base_retry_after(exc) is None, "precondition: the shared helper cannot see it"
+    assert mistral_mod.classify(exc).retry_after == 37.0
+
+
+def test_mistral_classify_ignores_http_date_retry_after():
+    exc = _sdk_error(429, headers={"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"})
+    assert mistral_mod.classify(exc).retry_after is None
+
+
+def test_mistral_translator_is_constructible_without_an_api_key(monkeypatch):
+    monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    r = load_registry()
+    tr = build_translator(r.get("mistral"), mistral_mod.DEFAULT_MODEL)
+    assert tr.model == mistral_mod.DEFAULT_MODEL
+    assert tr._client is None  # nothing built yet — no key needed
+
+
+def test_mistral_translator_unwraps_the_envelope_and_asks_for_json():
+    sent = {}
+
+    class FakeChat:
+        async def complete_async(self, **kwargs):
+            sent.update(kwargs)
+            message = type("M", (), {"content": '{"translation": "{a: 1} תחביר"}'})()
+            return type("C", (), {"choices": [type("Ch", (), {"message": message})()]})()
+
+    client = type("Client", (), {"chat": FakeChat()})()
+
+    r = load_registry()
+    tr = build_translator(r.get("mistral"), "mistral-small-latest")
+    tr._client = client
+    assert asyncio.run(tr.translate("prompt")) == "{a: 1} תחביר"
+    assert sent["response_format"] == {"type": "json_object"}
+    assert sent["model"] == "mistral-small-latest"
+    assert sent["temperature"] == 0.1
+
+
+def test_mistral_flattens_a_chunked_content_reply():
+    """`content` is `Union[str, List[ContentChunk]]`.
+
+    Handing the list straight to `extract_translation` would store a Python
+    repr in the translation memory, which renders as garbage and passes every
+    other check.
+    """
+    chunks = [
+        type("Chunk", (), {"text": '{"translation": "שלו'})(),
+        type("Chunk", (), {"text": 'ם"}'})(),
+    ]
+    assert mistral_mod._flatten(chunks) == '{"translation": "שלום"}'
+    assert mistral_mod._flatten("plain") == "plain"
+    assert mistral_mod._flatten(None) == ""
+
+
+def test_every_declared_provider_satisfies_the_connector_contract():
+    """The contract from PROVIDERS.md, enforced for all providers at once.
+
+    A new connector that forgets `classify`, or whose translator lacks `model`
+    or `translate`, fails here rather than at the first paid API call.
+    """
+    r = load_registry()
+    for name in r.names():
+        cfg = r.get(name)
+        translator = build_translator(cfg, "probe/model")
+        assert translator.model == "probe/model", name
+        assert callable(getattr(translator, "translate", None)), name
+        assert translator._client is None, f"{name}: client must be lazy"
+        assert callable(get_classify(cfg)), name

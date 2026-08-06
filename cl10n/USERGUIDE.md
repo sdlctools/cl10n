@@ -81,14 +81,16 @@ variable its key comes from plus an optional creds file:
 | --- | --- | --- | --- |
 | `groq` (default) | `GROQ_API_KEY` | `groq_creds.txt` | nothing — it is the default |
 | `nvidia` | `NVIDIA_NIM_API_KEY` | `nvidia-nim-creds.txt` | `--provider nvidia` |
+| `mistral` | `MISTRAL_API_KEY` | `mistral-creds.txt` | `--provider mistral` |
 
 ```bash
 export GROQ_API_KEY=gsk_...
 # or put it in a file, gitignored, which `run` reads automatically:
 echo 'GROQ_API_KEY="gsk_..."' > groq_creds.txt
 
-# For NVIDIA instead:
+# For another provider instead:
 export NVIDIA_NIM_API_KEY=nvapi-...
+export MISTRAL_API_KEY=...
 ```
 
 `run` reads the creds file belonging to whichever provider it resolved, so you
@@ -545,12 +547,13 @@ l10n/tm/<lang>.json           translation memory       committed  (the real asse
 l10n/manifest.json            per-document ledger      committed
 l10n/queue/queue.json         one run's state          GITIGNORED
 cl10n/providers.toml          the provider registry    committed
-*creds*.txt                   provider keys            GITIGNORED
+*creds*                       provider keys            GITIGNORED
 ```
 
-The creds-file glob covers both separators (`groq_creds.txt`,
-`nvidia-nim-creds.txt`) — a key file that does not match the ignore pattern is
-one `git add -A` away from being published, so the pattern is deliberately wide.
+The creds glob has no separator or extension filter, and both widenings were
+near-misses: `nvidia-nim-creds.txt` while only `*_creds.txt` was ignored, then a
+`.mistral-creds.txt.swp` swap file holding a key in plain text. A key file that
+does not match the ignore pattern is one `git add -A` away from being published.
 
 ### `l10n/tm/<lang>.json` — the translation memory
 
@@ -896,6 +899,7 @@ ______________________________________________________________________
 | --- | --- | --- |
 | `GROQ_API_KEY` | `run`, provider `groq` | env wins over the creds file |
 | `NVIDIA_NIM_API_KEY` | `run`, provider `nvidia` | env wins over the creds file |
+| `MISTRAL_API_KEY` | `run`, provider `mistral` | env wins over the creds file |
 
 Only the selected provider's variable is read. The authoritative list is the
 `api_key_env` of each entry in `cl10n/providers.toml`.
