@@ -317,6 +317,26 @@ Check three things in the resulting `l10n/tm/<lang>.json`:
 Then confirm the memory is shared: re-run the same queue routed to a *different*
 provider and expect **0 API calls, all TM hits**.
 
+### Test a placeholder-dense unit, and read the failure kinds before judging
+
+Plain prose passes on every model worth using, so it proves almost nothing. The
+unit that discriminates is one mixing inline code, a relative markdown link,
+`<ANGLE_KEYS>` and `$ARGUMENTS` — that is what real technical documentation
+looks like, and it is where a weaker model silently drops a placeholder and gets
+its job rejected.
+
+**Do not read a rejection as a capability verdict until you have ruled out
+throttling.** Measuring Mistral's models at `-c 2`, `mistral-large-latest`
+rejected both jobs — but the summary read `placeholder_lost=2, rate_limit=4`,
+and re-running serially at `-c 1` it passed. The rate limiting had eaten the
+retry budget the corrective re-prompt needed. `mistral-small-latest` failed the
+same way serially (9 placeholder failures in 10 calls), which *is* a capability
+result.
+
+So when a model looks bad: re-run with `-c 1` and a raised `--max-attempts`,
+then compare `failures by kind`. `rate_limit` means your tier; `placeholder_lost`
+alone means the model.
+
 ______________________________________________________________________
 
 ## 7. The prompt is shared on purpose

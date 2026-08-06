@@ -447,3 +447,30 @@ def test_every_declared_provider_satisfies_the_connector_contract():
         assert callable(getattr(translator, "translate", None)), name
         assert translator._client is None, f"{name}: client must be lazy"
         assert callable(get_classify(cfg)), name
+
+
+def test_the_mistral_default_model_is_one_the_api_offers():
+    """`default_model` must be a real id, and must carry no provider prefix.
+
+    The API's ids are bare (`mistral-large-latest`); the `mistral:` prefix is
+    *our* routing syntax and is stripped before the call. Writing
+    `mistral/mistral-large-latest` or `mistral:mistral-large-latest` into
+    `default_model` would send an id the API does not know, and the failure
+    arrives as a 400 on the first paid call rather than here.
+    """
+    r = load_registry()
+    model = r.get("mistral").default_model
+    assert model in {
+        "mistral-large-latest", "mistral-medium-latest", "mistral-small-latest",
+    }
+    assert "/" not in model and ":" not in model
+
+
+@pytest.mark.parametrize("model", [
+    "mistral-large-latest", "mistral-medium-latest", "mistral-small-latest",
+])
+def test_a_prefixed_mistral_model_routes_and_is_stripped(model):
+    """`--model mistral:<id>` selects the connector and passes the bare id."""
+    route = resolve_route(load_registry(), model=f"mistral:{model}")
+    assert route.provider == "mistral"
+    assert route.model == model  # the prefix never reaches the provider

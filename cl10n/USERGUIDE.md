@@ -83,6 +83,35 @@ variable its key comes from plus an optional creds file:
 | `nvidia` | `NVIDIA_NIM_API_KEY` | `nvidia-nim-creds.txt` | `--provider nvidia` |
 | `mistral` | `MISTRAL_API_KEY` | `mistral-creds.txt` | `--provider mistral` |
 
+### Mistral models
+
+All three `-latest` aliases are verified working. Note the model id carries **no
+`mistral/` prefix** — that is the provider's own naming; our routing prefix is a
+colon, and the connector strips it before the call:
+
+```bash
+venv/bin/python3 cl10n/cli.py run --model mistral:mistral-large-latest
+venv/bin/python3 cl10n/cli.py run --model mistral:mistral-medium-latest
+venv/bin/python3 cl10n/cli.py run --provider mistral    # = mistral-large-latest
+```
+
+| Model | Simple prose | A unit with 5 mixed placeholders |
+| --- | --- | --- |
+| `mistral-large-latest` (default) | clean | clean, but needed one corrective retry |
+| `mistral-medium-latest` | clean | clean, one corrective retry — the best value here |
+| `mistral-small-latest` | clean | **unreliable** — 9 placeholder failures in 10 calls, one unit still rejected after 5 attempts |
+
+Measured on a deliberately hostile unit mixing inline code, a relative markdown
+link, `<ANGLE_KEYS>` and `$ARGUMENTS`. The lesson is not the ranking but the
+shape: **placeholder-dense technical prose is what separates these models**, and
+plain paragraphs do not. A rejected unit is not lost work — it renders as
+English and is re-enqueued next run — but a model that rejects often turns
+`--fail-on-fallback` into a permanent red build.
+
+Prefer `medium` or `large` for documentation like this repo's. If you see
+`placeholder_lost` dominating `run`'s failure summary, that is the model, not
+the pipeline — raise `plan --max-attempts` or move up a size.
+
 ```bash
 export GROQ_API_KEY=gsk_...
 # or put it in a file, gitignored, which `run` reads automatically:
