@@ -59,9 +59,19 @@ human marks the draft ready and merges into main
                                                  tag vX.Y.Z on the merge commit
                                                  gh release create (notes since previous plain tag)
                                                  bump pyproject on main, push
+                                                 build wheel+sdist from the BUMPED tree
                                                  back-merge main -> development (PR on conflict)
                                                  delete release/sprint-X.Y.Z
+                                            └──► publish-pypi   upload to PyPI (OIDC)
 ```
+
+`publish-pypi` is a second job in the same file, `needs: release`. It is
+separate because both things it requires are job-scoped — `id-token: write`
+for the OIDC claim PyPI verifies, and `environment: pypi`, which is what a
+trusted publisher is registered against. Scoping them there also means the
+release job never holds a credential that can publish a package. It runs
+last, after the tag, the Release, the bump and the back-merge, so a failed
+upload never strands the repository mid-release.
 
 A `hotfix/*` PR merged into `main` enters `release.yml` at the same point,
 differing only in version resolution: no branch-name parse, a forced patch
@@ -166,6 +176,8 @@ conflict-path sync PR and `cl10n.yml`'s translation PR.
 | `gh pr create`: *No commits between …* | `main` already contains everything on the cut branch | the `chore: cut` commit prevents this; if seen, the commit was removed |
 | `Release` fails: *Tag … already exists* | the version was already released, or a tag was pushed by hand | do not overwrite; re-cut at the next version |
 | Back-merge opened a PR instead of pushing | `main` and `development` diverged | resolve the sync PR by hand — never force-push `development` |
+| `publish-pypi` fails with `invalid-publisher` | no trusted publisher registered on PyPI for this repo/workflow/environment | register it (AGENTS.md → Releasing lists the exact five fields); everything else in the release already succeeded, so re-run just this job |
+| `publish-pypi` fails: *File already exists* | that version was already uploaded; PyPI files are immutable | do not try to overwrite — cut the next version |
 | No `vX.Y.Z-dev.1` after a release | invariant 2, not a bug | it appears on the next push to `development` |
 
 ### Recovering a release that never fired

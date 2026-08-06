@@ -25,22 +25,22 @@ the two disagree, the spec wins and this file is the bug.
 | `cl10n/providers/` | The registry loader + one connector module per provider (§7). |
 | `cl10n/build_queue.py` | **Dev scaffolding**, not a pipeline component — see "What this is not". |
 | `cl10n/placeholders.py` | The placeholder-integrity rule (§6), shared with reassembly so the two enforcement points cannot drift. |
-| `app/prompt.py` | The provider-agnostic prompt, `PROMPT_VERSION` and `LANG_NAMES` (§7). |
+| `cl10n/core/prompt.py` | The provider-agnostic prompt, `PROMPT_VERSION` and `LANG_NAMES` (§7). |
 | `cl10n/tests/` | Provider stubbed throughout; none needs an API key or touches the network. |
 
 Reassembly and rendering — the step that consumes this runner's output — is
 `cl10n/reassemble.py`, specified in
 [`cl10n-reassembly-spec.md`](cl10n-reassembly-spec.md).
 
-Everything the runner reads and writes is defined by `app/schemas/*.schema.json`.
+Everything the runner reads and writes is defined by `cl10n/schemas/*.schema.json`.
 Those schemas are the contract; a state file that fails validation is a bug in
 its writer.
 
 ```bash
-venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run
-venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json -c 8
-venv/bin/python3 cl10n/queue_runner.py QUEUE --provider nvidia          # §7
-venv/bin/python3 cl10n/queue_runner.py QUEUE --model nvidia:some/model  # §7
+venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json --dry-run
+venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json -c 8
+venv/bin/python3 -m cl10n.queue_runner QUEUE --provider nvidia          # §7
+venv/bin/python3 -m cl10n.queue_runner QUEUE --model nvidia:some/model  # §7
 venv/bin/python3 -m pytest                                       # full suite
 venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
 ```
@@ -48,7 +48,7 @@ venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
 ## What the runner is responsible for
 
 Calling the translation API and recording the result. It does **not** decide
-what to translate (`app/tree_diff.py` does) and does **not** turn translations
+what to translate (`cl10n/core/tree_diff.py` does) and does **not** turn translations
 back into Markdown (reassembly does, and does not exist yet). If you find
 yourself parsing Markdown in `cl10n/`, you are in the wrong component.
 
@@ -273,17 +273,21 @@ compatibility; they are re-exports, not the implementation.
   module scope raises (or silently misconfigures) when the key is unset, which
   makes the module unimportable on any machine without credentials — including
   CI. Constructing a translator must make no network call and need no key.
-- **`cl10n/providers/groq.py` and the `groq` PyPI package share a top-level
-  name**, and this bites in two directions. The connector must **not** put
-  `cl10n/providers/` on `sys.path` (prepend it and `import groq` inside the
-  connector finds *itself*, a circular import at first use); and the registry
-  must **not** resolve a bare connector name with `import_module` (the library
-  is normally already in `sys.modules`, so it returns the *library* and the
-  lookup dies with `module 'groq' has no attribute 'GroqTranslator'`). Both are
-  solved the same way: **connector modules and `base` are loaded from an
-  explicit file path**, under a `_cl10n_providers_*` module key. A dotted
-  connector name is still imported normally, for a connector living outside
-  this directory. `test_providers.py` pins the regression.
+- **`cl10n/providers/groq.py` and the `groq` PyPI package share a leaf name**,
+  which used to bite in two directions and no longer can. As bare top-level
+  modules they competed for one `sys.modules` entry: the connector could not
+  put `cl10n/providers/` on `sys.path` (prepend it and `import groq` inside the
+  connector finds *itself*), and the registry could not resolve a bare
+  connector name with `import_module` (the library is normally already
+  imported, so it returned the *library* and the lookup died with
+  `module 'groq' has no attribute 'GroqTranslator'`). **The package layout is
+  the fix**: absolute imports make `import groq` in `cl10n.providers.groq`
+  unambiguously the library, and the connector is only ever
+  `cl10n.providers.groq`. So bare connector names resolve against
+  `cl10n.providers.<name>` and connectors import `base` normally; a dotted
+  connector name is imported as given, for one living outside this package.
+  Do not reintroduce the `sys.path` prelude or the file-path loader — they
+  were the workaround, not the invariant. `test_providers.py` pins it.
 - **The JSON envelope.** `TRANSLATION_PROMPT` rule 4 asks for a JSON object and
   the model obliges with `{"translation": "…"}`; storing that raw puts the
   wrapper in the TM. `base.extract_translation` unwraps it tolerantly (bare
@@ -300,8 +304,8 @@ retries and the rate-limit gate behave identically across providers.
 
 ### The prompt is provider-agnostic
 
-`app/prompt.py` owns `TRANSLATION_PROMPT`, `PROMPT_VERSION` and `LANG_NAMES`;
-`app/groq_api.py` re-exports them for backward compatibility. Every connector
+`cl10n/core/prompt.py` owns `TRANSLATION_PROMPT`, `PROMPT_VERSION` and `LANG_NAMES`;
+`cl10n/core/groq_api.py` re-exports them for backward compatibility. Every connector
 sends identical rules, so a Groq translation and an NVIDIA translation at the
 same `PROMPT_VERSION` are interchangeable and **the TM shortcut fires across
 providers** — switching provider does not re-bill the corpus.
@@ -329,7 +333,7 @@ reads the manifest, recovers each document's previous revision through
 That belongs to its own sub-task — do not grow this file into it.
 
 **Reassembly and rendering are not here.** Splicing translated `inline` content
-back into the new tree and rendering through `app/utils.py`'s `ast_to_markdown`
+back into the new tree and rendering through `cl10n/core/utils.py`'s `ast_to_markdown`
 is `cl10n/reassemble.py`, a separate component with its own spec. The runner's
 output — the TM plus a queue whose `rejected` jobs name the units needing
 English fallback — is that component's input.

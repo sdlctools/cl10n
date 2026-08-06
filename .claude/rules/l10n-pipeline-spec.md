@@ -6,7 +6,6 @@ description: >-
   runtime sub-tasks (JST-263/264/265) implement against. Read before writing
   or changing any pipeline component, state file, or schema.
 paths:
-  - app/**
   - cl10n/**
   - l10n/**
   - locales/**
@@ -16,11 +15,11 @@ paths:
 
 The contract for a pipeline that keeps translated mirrors of a Markdown corpus
 continuously up to date. Change detection is **already solved** by
-[`app/tree_diff.py`](../../app/tree_diff.py) (design rationale:
+[`cl10n/core/tree_diff.py`](../../cl10n/core/tree_diff.py) (design rationale:
 [`tree-diff-spec.md`](tree-diff-spec.md), which is binding background); this
 document consumes that engine and specifies everything around it. It defines
 **no runtime component** — the JSON Schemas in
-[`app/schemas/`](../../app/schemas/) plus this prose are the interface the
+[`cl10n/schemas/`](../../cl10n/schemas/) plus this prose are the interface the
 implementation sub-tasks build against.
 
 **Corpus under test**: `md/skills/jira-task-assigner/SKILL.md`,
@@ -149,8 +148,8 @@ occurrences, the first occurrence's heading trail is used.
 
 ## 3. Translation memory — `l10n/tm/<lang>.json`
 
-Schema: [`app/schemas/translation-memory.schema.json`](../../app/schemas/translation-memory.schema.json).
-Worked example (real corpus data): [`app/schemas/examples/tm.he.json`](../../app/schemas/examples/tm.he.json).
+Schema: [`cl10n/schemas/translation-memory.schema.json`](../../cl10n/schemas/translation-memory.schema.json).
+Worked example (real corpus data): [`cl10n/schemas/examples/tm.he.json`](../../cl10n/schemas/examples/tm.he.json).
 
 One file **per language**, keyed by translation-unit hash exactly as produced
 by `tree_diff.hash_tree` (16 lowercase hex chars). Each entry stores:
@@ -161,7 +160,7 @@ by `tree_diff.hash_tree` (16 lowercase hex chars). Each entry stores:
   hash of the source); if no file references it, it is garbage.
 - `translation` — the translated text, placeholders intact.
 - `model` + `prompt_version` — which model and which revision of the
-  translation prompt (`app/prompt.py` `TRANSLATION_PROMPT`; version bumps
+  translation prompt (`cl10n/core/prompt.py` `TRANSLATION_PROMPT`; version bumps
   whenever that prompt's rules change) produced it. The prompt is
   provider-agnostic, so `prompt_version` does not record *which* provider
   translated the unit — entries made through different connectors at the same
@@ -194,8 +193,8 @@ insertions stay local.
 
 ## 4. Queue and jobs — `l10n/queue/queue.json`
 
-Schema: [`app/schemas/queue.schema.json`](../../app/schemas/queue.schema.json).
-Worked example (real corpus data): [`app/schemas/examples/queue.json`](../../app/schemas/examples/queue.json).
+Schema: [`cl10n/schemas/queue.schema.json`](../../cl10n/schemas/queue.schema.json).
+Worked example (real corpus data): [`cl10n/schemas/examples/queue.json`](../../cl10n/schemas/examples/queue.json).
 
 A queue file is an ordered list of jobs plus run metadata (`run_id`,
 `created_at`, `source_commit` — the commit of `md/` the plan was computed
@@ -282,8 +281,8 @@ records the unit hash under `fallbacks` for that language so CI can report
 
 ## 6. Manifest and file layout — `l10n/manifest.json`
 
-Schema: [`app/schemas/manifest.schema.json`](../../app/schemas/manifest.schema.json).
-Worked example (real corpus data): [`app/schemas/examples/manifest.json`](../../app/schemas/examples/manifest.json).
+Schema: [`cl10n/schemas/manifest.schema.json`](../../cl10n/schemas/manifest.schema.json).
+Worked example (real corpus data): [`cl10n/schemas/examples/manifest.json`](../../cl10n/schemas/examples/manifest.json).
 
 The manifest is the pipeline's per-document ledger. Per source file it
 records: `source_blob` (git blob SHA of the last-localized revision — step 3
@@ -327,7 +326,7 @@ other can resume. Normative requirements:
    API request.
 7. Restart rule: `in_flight → pending`, then the TM shortcut — no other
    startup mutation.
-8. The three schemas in `app/schemas/` are the contract; a state file that
+8. The three schemas in `cl10n/schemas/` are the contract; a state file that
    fails schema validation is a bug in its writer, not in its reader.
 
 ## What this spec deliberately does not cover
