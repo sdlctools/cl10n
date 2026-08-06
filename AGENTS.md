@@ -168,9 +168,17 @@ worked flows — first localization, adding a language, day-to-day updates —
 plus a cookbook and a troubleshooting table. Read the spec for *why*, the
 guide for *how*. [`cl10n/INTEGRATION.md`](cl10n/INTEGRATION.md) covers
 vendoring the pipeline into another repository, which has its own failure
-modes: which files to copy (not `cl10n/tests/` — they test *this* repo), what
-committing actually buys, and the one-manifest-per-repository rule that
-silently deletes translations if you invert it.
+modes: which files to copy (not `cl10n/tests/` — they test *this* repo, and
+`cl10n/providers/` is a directory the `*.py` glob misses), what committing
+actually buys, and the one-manifest-per-repository rule that silently deletes
+translations if you invert it.
+
+**Adding a provider: [`cl10n/PROVIDERS.md`](cl10n/PROVIDERS.md)** — the
+step-by-step for teaching the pipeline a new LLM API. One TOML entry plus one
+connector module; the runner and the CLI are never edited. Covers the
+`classify` kinds table, the lazy-client and no-runner-branching invariants, the
+`groq` name-collision trap, the test bar (no key, no network) and the CI secret
+wiring.
 
 ## the parsing stack is pinned, and drift is checked
 

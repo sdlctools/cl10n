@@ -8,23 +8,35 @@ provider. Where something is a caveat rather than a step, it is because it bit
 during that run.
 
 For the day-to-day interface once you are set up, see
-[`USERGUIDE.md`](USERGUIDE.md).
+[`USERGUIDE.md`](USERGUIDE.md). To point the pipeline at an LLM API that is not
+Groq or NVIDIA, see [`PROVIDERS.md`](PROVIDERS.md).
 
 ______________________________________________________________________
 
 ## 1. What you are actually copying
 
-The pipeline is **eight runtime modules plus three engine modules**. It is not
-a package; the modules are bare scripts that put their own directory and `app/`
+The pipeline is **the `cl10n/` runtime modules, the `cl10n/providers/` package
+and its `providers.toml`, plus four engine modules from `app/`**. It is not a
+package; the modules are bare scripts that put their own directory and `app/`
 on `sys.path`, so copying files is the installation procedure.
 
 | Copy | From | Why |
 | --- | --- | --- |
 | `cl10n/*.py` | `cl10n/` | the runtime: CLI, runner, reassembly, ledger, store |
+| `cl10n/providers/` | `cl10n/` | **the whole directory** — the provider registry and every connector |
+| `cl10n/providers.toml` | `cl10n/` | which providers exist, their keys, models and connectors |
 | `app/tree_diff.py` | `app/` | change detection: segmentation and Merkle hashing |
 | `app/utils.py` | `app/` | the canonicalisation round-trip every hash is taken over |
-| `app/groq_api.py` | `app/` | provider client and the translation prompt |
+| `app/prompt.py` | `app/` | the translation prompt, `PROMPT_VERSION`, language names |
+| `app/groq_api.py` | `app/` | the Groq client the default connector calls |
 | `requirements.txt` | root | dependencies |
+
+**`cl10n/providers/` is a directory, so `cp cl10n/*.py` does not take it**, and
+neither does it take `providers.toml`. Miss either and the runner imports fine
+but dies the moment it resolves a provider — `run` is the only command that
+touches them, so `plan`, `render` and `status` will all look healthy first.
+`app/prompt.py` is the same trap in `app/`: without it every command fails at
+import, which at least fails loudly.
 
 **Do not copy `cl10n/tests/`.** This is the one instruction people get wrong.
 Those tests verify *the pipeline* against *this repository* — its `md/`
@@ -63,11 +75,20 @@ UPSTREAM=/path/to/markdown-localization
 PROJECT=/path/to/your-project
 
 mkdir -p "$PROJECT"/{cl10n,app,md}
-cp "$UPSTREAM"/cl10n/*.py        "$PROJECT/cl10n/"
-cp "$UPSTREAM"/app/tree_diff.py  "$PROJECT/app/"
-cp "$UPSTREAM"/app/utils.py      "$PROJECT/app/"
-cp "$UPSTREAM"/app/groq_api.py   "$PROJECT/app/"
-cp "$UPSTREAM"/requirements.txt  "$PROJECT/"
+cp "$UPSTREAM"/cl10n/*.py             "$PROJECT/cl10n/"
+cp -r "$UPSTREAM"/cl10n/providers     "$PROJECT/cl10n/"   # directory — the glob misses it
+cp "$UPSTREAM"/cl10n/providers.toml   "$PROJECT/cl10n/"
+cp "$UPSTREAM"/app/tree_diff.py       "$PROJECT/app/"
+cp "$UPSTREAM"/app/utils.py           "$PROJECT/app/"
+cp "$UPSTREAM"/app/prompt.py          "$PROJECT/app/"
+cp "$UPSTREAM"/app/groq_api.py        "$PROJECT/app/"
+cp "$UPSTREAM"/requirements.txt       "$PROJECT/"
+```
+
+Confirm the two easily-missed pieces actually arrived:
+
+```bash
+ls "$PROJECT"/cl10n/providers/*.py "$PROJECT"/cl10n/providers.toml "$PROJECT"/app/prompt.py
 ```
 
 If your project already has a `requirements.txt`, merge rather than overwrite —
@@ -81,7 +102,16 @@ mdformat-gfm==1.0.0
 mdformat-frontmatter==2.1.2
 linkify-it-py==2.1.0
 groq
+openai
 ```
+
+`groq` and `openai` are the provider client libraries — `openai` is what the
+NVIDIA connector uses against an OpenAI-compatible endpoint, not an OpenAI
+account. Neither is pinned: they never touch a hash, so they upgrade freely.
+You only need the library for the providers you actually use; connectors are
+imported lazily, so dropping one you never route to is safe (delete its entry
+from `providers.toml` too, or `--provider` will offer a connector that cannot
+import).
 
 Every unit hash in your translation memory is taken over these five packages in
 one specific configuration. A minor upgrade has twice taught markdown-it-py to
@@ -122,12 +152,18 @@ Add to `.gitignore`:
 venv/
 __pycache__/
 l10n/queue/          # per-run state, never committed
-groq_creds.txt       # provider key
+*creds*.txt          # provider keys — both separators, see below
 ```
 
 Both entries matter. A committed queue file ships transient state and causes
 exactly the merge conflicts the per-language memory files are designed to
 avoid, and a committed key is a leaked key.
+
+**Use a wide glob for the key files, not one filename per provider.** Each
+provider declares its own creds file in `providers.toml`, and their names do not
+share a separator — `groq_creds.txt` but `nvidia-nim-creds.txt`. A pattern
+matching only one of those leaves the other untracked but *unignored*, which is
+one `git add -A` away from publishing a key. This happened during development.
 
 **Your project must be a git repository.** The pipeline recovers each
 document's previously localized revision through `git cat-file blob`. Without
@@ -153,8 +189,15 @@ Supply the provider key, then run the same four commands you will run for ever
 after. There is no initialization mode — a first localization is an incremental
 update that happens to find everything missing.
 
+The key you need is the one belonging to the provider you will run. With no
+`--provider` flag that is the registry default, `groq`; `cl10n/providers.toml`
+lists every declared provider and the environment variable each expects.
+
 ```bash
 echo 'GROQ_API_KEY="gsk_..."' > groq_creds.txt
+# or, to run NVIDIA instead:
+#   echo 'NVIDIA_NIM_API_KEY="nvapi-..."' > nvidia-nim-creds.txt
+#   ...and add --provider nvidia to the `run` command below
 
 venv/bin/python3 cl10n/cli.py status --langs he    # 0%
 venv/bin/python3 cl10n/cli.py plan   --langs he
@@ -272,8 +315,12 @@ Copy `.github/workflows/cl10n.yml` from upstream and change four things:
 | languages | `env.LANGS` | your language list |
 | corpus root | the `plan` / `render` / `status` steps | add `--md-root docs` if not `md` |
 
-Add `GROQ_API_KEY` as a repository secret under **Settings → Secrets and
-variables → Actions**.
+Add the key for the provider your workflow runs as a repository secret under
+**Settings → Secrets and variables → Actions** — `GROQ_API_KEY` for the default,
+`NVIDIA_NIM_API_KEY` for NVIDIA. The workflow binds every declared provider's
+secret to the single Execute step; a secret you have not created arrives as an
+empty string and is simply never read, because the runner only consults the
+active provider's variable. **Add only the ones you actually use.**
 
 Leave these three alone unless you know exactly why you are changing them. Each
 fails silently rather than loudly:
@@ -392,9 +439,11 @@ render and you keep it. Forget once and nothing is broken.
 
 Setup:
 
-- [ ] `cl10n/*.py` and the three `app/` modules copied; `cl10n/tests/` **not** copied
+- [ ] `cl10n/*.py` and the four `app/` modules copied; `cl10n/tests/` **not** copied
+- [ ] `cl10n/providers/` (the whole directory) and `cl10n/providers.toml` copied —
+      the `*.py` glob takes neither
 - [ ] dependencies merged into `requirements.txt` and installed into `venv/`
-- [ ] `l10n/queue/` and `groq_creds.txt` in `.gitignore`
+- [ ] `l10n/queue/` and a wide `*creds*.txt` glob in `.gitignore`
 - [ ] project is a git repository and the corpus is committed
 
 Verification, in order:
@@ -407,7 +456,8 @@ Verification, in order:
 Shipping:
 
 - [ ] `locales/`, `l10n/tm/` and `l10n/manifest.json` committed together
-- [ ] workflow adapted, `GROQ_API_KEY` secret added, first run triggered manually
+- [ ] workflow adapted, the secret for **your** provider added, first run
+      triggered manually
 
 ## 11. Integration troubleshooting
 
@@ -417,7 +467,10 @@ Shipping:
 | `no source markdown found under md` | corpus is elsewhere | `--md-root <dir>`, on every command |
 | every document plans as new, every run | manifest missing, or a different `--manifest` per command | pass the same path everywhere; check `l10n/manifest.json` exists |
 | everything shows `[not rendered]` | `--out-dir` differs between `render` and `status` | pass the same flags to both |
-| `GROQ_API_KEY is not set` | no env var, and no `groq_creds.txt` in the working directory | export it, or `run --creds-file <path>` |
+| `<KEY> is not set` | no env var, and no creds file for the **selected** provider, in the working directory | export it, or `run --creds-file <path>`; the name in the message is that provider's `api_key_env` |
+| `unknown provider 'x'` | `--provider` or a `provider:` model prefix names something absent from `providers.toml` | the error lists what is declared; check `providers.toml` was copied |
+| `run` fails at import but `plan`/`render`/`status` work | `cl10n/providers/` or `providers.toml` not copied — only `run` resolves a provider | copy the directory and the TOML; see [section 1](#1-what-you-are-actually-copying) |
+| `ModuleNotFoundError: prompt` | `app/prompt.py` not copied | copy it; it holds the prompt and `PROMPT_VERSION` |
 | upstream tests fail after copying | they test the upstream repo, not yours | don't copy them — see [section 1](#1-what-you-are-actually-copying) |
 | `pytest` reports `async def functions are not natively supported` | `pytest.ini` with `asyncio_mode = auto` not copied | only relevant if you copied the tests |
 | GC deleted another root's translations | two corpus roots with **separate** manifests sharing one memory | share **one** manifest across roots — see [section 8](#8-a-different-corpus-layout) |

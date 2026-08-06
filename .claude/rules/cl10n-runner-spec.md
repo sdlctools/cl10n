@@ -231,6 +231,9 @@ this is always one complete translation, never an iterator.
 
 ### Adding a provider is config plus a module — never a runner change
 
+The step-by-step, with the checklist and the traps, is
+[`cl10n/PROVIDERS.md`](../../cl10n/PROVIDERS.md). What follows is the design.
+
 ```
 cl10n/providers.toml     default = "groq"; one [providers.<name>] table each
 cl10n/providers/

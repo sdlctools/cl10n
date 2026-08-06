@@ -5,6 +5,8 @@ continuous-localization pipeline. This is the *how-to*: worked examples, real
 output, and the flows you will actually run. For the *why* behind the design
 decisions, read [`.claude/rules/cl10n-cli-spec.md`](../.claude/rules/cl10n-cli-spec.md);
 for the data contracts, [`.claude/rules/l10n-pipeline-spec.md`](../.claude/rules/l10n-pipeline-spec.md).
+To add a provider the pipeline does not yet speak to, see
+[`PROVIDERS.md`](PROVIDERS.md).
 
 Every command and every block of output below was run against this repository.
 
@@ -71,15 +73,32 @@ not `.venv/`.
 A provider key is needed **only by `run`**. `plan`, `render` and `status` never
 touch the network, so you can explore the whole pipeline without one.
 
+Which key depends on which provider you run. Providers are declared in
+[`cl10n/providers.toml`](providers.toml), and each one names the environment
+variable its key comes from plus an optional creds file:
+
+| Provider | Key variable | Default creds file | Selected by |
+| --- | --- | --- | --- |
+| `groq` (default) | `GROQ_API_KEY` | `groq_creds.txt` | nothing — it is the default |
+| `nvidia` | `NVIDIA_NIM_API_KEY` | `nvidia-nim-creds.txt` | `--provider nvidia` |
+
 ```bash
 export GROQ_API_KEY=gsk_...
 # or put it in a file, gitignored, which `run` reads automatically:
 echo 'GROQ_API_KEY="gsk_..."' > groq_creds.txt
+
+# For NVIDIA instead:
+export NVIDIA_NIM_API_KEY=nvapi-...
 ```
 
-The default creds file is `groq_creds.txt` in the working directory. Point
-elsewhere with `run --creds-file path/to/file`. An environment variable that is
-already set always wins over the file.
+`run` reads the creds file belonging to whichever provider it resolved, so you
+never have to say which file goes with which key. Point elsewhere with
+`run --creds-file path/to/file`. An environment variable that is already set
+always wins over the file. You only need a key for the provider you actually
+run — an unset key for a provider you are not using is never consulted.
+
+Adding a further provider is a config entry plus a connector module; see
+[`PROVIDERS.md`](PROVIDERS.md).
 
 Run the commands from the repository root — `plan` and `render` locate the repo
 with `git rev-parse --show-toplevel` and record paths relative to it.
@@ -292,6 +311,8 @@ venv/bin/python3 cl10n/cli.py run                              # default queue
 venv/bin/python3 cl10n/cli.py run l10n/queue/queue.json -c 8
 venv/bin/python3 cl10n/cli.py run --dry-run                    # no network
 venv/bin/python3 cl10n/cli.py run -c 8 --dry-run               # flags without a path
+venv/bin/python3 cl10n/cli.py run --provider nvidia            # a different provider
+venv/bin/python3 cl10n/cli.py run --model nvidia:some/model    # prefix routes too
 venv/bin/python3 cl10n/cli.py run --help                       # the runner's flags
 ```
 
@@ -303,10 +324,33 @@ The queue path is optional in every position — omit it and the default is used
 | `--tm-dir` | `l10n/tm` | where translations are written |
 | `-c`, `--concurrency` | `4` | in-flight requests |
 | `--request-timeout` | `120.0` | seconds per request; `0` disables |
-| `--model` | `openai/gpt-oss-120b` | provider model |
+| `--provider` | the registry default (`groq`) | which connector to use |
+| `--model` | the selected provider's `default_model` | model id, optionally `provider:model` |
 | `-n`, `--dry-run` | off | report what would be called, contact nothing |
-| `--creds-file` | `groq_creds.txt` | read `GROQ_API_KEY` from here if unset |
+| `--creds-file` | the provider's `api_key_creds_file` | read its key from here if the env var is unset |
+| `--providers` | `cl10n/providers.toml` | path to the provider registry |
 | `--json` | off | machine-readable output |
+
+#### Choosing a provider
+
+Three ways to say which provider runs, in priority order:
+
+1. **A prefix on `--model`** — `--model nvidia:nvidia/nemotron-3-ultra-550b-a55b`
+   selects the provider *and* the model. The prefix wins over `--provider`.
+2. **`--provider nvidia`** — selects the connector; a bare `--model` is then
+   interpreted as that provider's model, and no `--model` uses its default.
+3. **Neither** — the registry default, `groq`, with its default model. This is
+   exactly the behaviour the pipeline had before providers became pluggable.
+
+The model id is passed to the provider untouched once any prefix is stripped, so
+`--model groq:openai/gpt-oss-120b` and `--model openai/gpt-oss-120b` send the
+same thing.
+
+Translations are **shared across providers**. The translation memory is keyed by
+content hash and prompt version, not by provider, so a unit translated by one
+provider is reused by a run routed to another — switching provider does not
+re-translate the corpus. Only `model` in the entry's provenance records which
+one produced it.
 
 `--dry-run` is the cost estimate:
 
@@ -331,7 +375,9 @@ Concurrency is bounded by your account's rate limit, not by this flag. On a
 free-tier Groq account at 8000 TPM, measured on 30 real units: 232s serially
 versus 156s at `-c 8`. Pushing concurrency higher mostly produces more 429s, and
 an account-wide rate-limit gate parks the whole run when one arrives rather than
-letting every worker retry into the same wall.
+letting every worker retry into the same wall. Those numbers are Groq's tier —
+every provider meters differently, so re-measure rather than assuming `-c 8`
+transfers. The gate itself is provider-independent.
 
 A rejected job is a reportable outcome, not a crash: `run` exits `1`, the queue
 records the failure, and the renderer falls back to English for that unit.
@@ -498,8 +544,13 @@ locales/<lang>/**.md          rendered translations    committed  (the product)
 l10n/tm/<lang>.json           translation memory       committed  (the real asset)
 l10n/manifest.json            per-document ledger      committed
 l10n/queue/queue.json         one run's state          GITIGNORED
-groq_creds.txt                provider key             GITIGNORED
+cl10n/providers.toml          the provider registry    committed
+*creds*.txt                   provider keys            GITIGNORED
 ```
+
+The creds-file glob covers both separators (`groq_creds.txt`,
+`nvidia-nim-creds.txt`) — a key file that does not match the ignore pattern is
+one `git add -A` away from being published, so the pattern is deliberately wide.
 
 ### `l10n/tm/<lang>.json` — the translation memory
 
@@ -792,7 +843,9 @@ ______________________________________________________________________
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `no source markdown found under md` | wrong `--md-root`, or you are not at the repo root | `cd` to the root or pass `--md-root` |
-| `GROQ_API_KEY is not set` | no env var and no creds file | export it, or `--creds-file` |
+| `<KEY> is not set` (e.g. `GROQ_API_KEY`, `NVIDIA_NIM_API_KEY`) | no env var and no creds file for the **selected** provider | export it, or `--creds-file`; the name in the message is the provider's `api_key_env` |
+| `unknown provider 'x'` | `--provider` or a `provider:` model prefix names something not in `providers.toml` | the message lists what is declared |
+| `module 'groq' has no attribute 'GroqTranslator'` | a connector is being resolved by module name instead of by file path | see [`PROVIDERS.md`](PROVIDERS.md) → the name-collision trap |
 | `status` says 0% but files rendered fine | memory entries carry an older `prompt_version` | expected with `pseudo_tm`; otherwise re-run `plan`/`run` |
 | `plan` finds everything new after a history rewrite | `source_blob` unreachable | harmless — memory turns it back into no-ops |
 | `plan` keeps enqueueing the same unit | its job ends `rejected` every run | look at `error` in the queue file; often a placeholder the model keeps dropping |
@@ -835,13 +888,17 @@ ______________________________________________________________________
 | --- | --- | --- | --- | --- |
 | `0` | planned | all jobs terminal, none rejected | rendered cleanly | reported |
 | `1` | — | one or more jobs `rejected` | violation, structure mismatch, or `--fail-on-fallback` with fallbacks | `--fail-on-incomplete` with missing units |
-| `2` | no source markdown found | no `GROQ_API_KEY` | no source markdown found | no source markdown found |
+| `2` | no source markdown found | the selected provider's key is unset | no source markdown found | no source markdown found |
 
 ### Environment
 
 | Variable | Used by | Notes |
 | --- | --- | --- |
-| `GROQ_API_KEY` | `run` | env wins over `--creds-file` |
+| `GROQ_API_KEY` | `run`, provider `groq` | env wins over the creds file |
+| `NVIDIA_NIM_API_KEY` | `run`, provider `nvidia` | env wins over the creds file |
+
+Only the selected provider's variable is read. The authoritative list is the
+`api_key_env` of each entry in `cl10n/providers.toml`.
 
 ### Defaults
 
@@ -855,9 +912,14 @@ ______________________________________________________________________
 | manifest | `l10n/manifest.json` | `manifest.DEFAULT_MANIFEST` |
 | concurrency | `4` | `queue_runner.DEFAULT_CONCURRENCY` |
 | request timeout | `120.0`s | `queue_runner.DEFAULT_REQUEST_TIMEOUT` |
-| model | `openai/gpt-oss-120b` | `groq_api.DEFAULT_MODEL` |
-| prompt version | `v1` | `groq_api.PROMPT_VERSION` |
+| provider | `groq` | `providers.toml` → `default` |
+| model | `openai/gpt-oss-120b` | `providers.toml` → `[providers.groq] default_model` |
+| prompt version | `v1` | `prompt.PROMPT_VERSION` (`app/prompt.py`) |
 | max attempts | `3` | `plan --max-attempts` |
+
+The prompt, its version and the language-name table are **provider-agnostic**
+and live in `app/prompt.py`. `app/groq_api.py` re-exports them for backward
+compatibility, but new code should import from `prompt`.
 
 ### `plan --report` shape
 
