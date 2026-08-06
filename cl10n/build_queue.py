@@ -7,9 +7,9 @@ it belongs to its own sub-task. What this does is the narrow slice
 `queue_runner` needs to be exercised and benchmarked against the real corpus
 today: plan every document against the empty document (spec §1's degenerate
 first-time case), keep the two actions that become jobs, and write a queue file
-that validates against `app/schemas/queue.schema.json`.
+that validates against `cl10n/schemas/queue.schema.json`.
 
-    venv/bin/python3 cl10n/build_queue.py --langs he,ru -o l10n/queue/queue.json
+    python -m cl10n.build_queue --langs he,ru -o l10n/queue/queue.json
 
 Nothing here writes to the translation memory or the manifest.
 """
@@ -22,13 +22,12 @@ import os
 import subprocess
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
+from cl10n.core import tree_diff  # the planner this scaffolding drives
+from cl10n.l10n_store import new_job, new_queue, save_queue
 
-import tree_diff  # noqa: E402  (app/ — the planner this scaffolding drives)
-from l10n_store import new_job, new_queue, save_queue  # noqa: E402
-
-REPO = os.path.dirname(_HERE)
+# The checkout being localized is the working directory, not wherever this
+# module happens to be installed — the package may live in site-packages.
+REPO = os.getcwd()
 ENQUEUEABLE = {"TRANSLATE", "REVISE"}
 
 

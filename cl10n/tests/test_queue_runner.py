@@ -17,9 +17,9 @@ import jsonschema
 import pytest
 from conftest import ScriptedTranslator, StubTranslator, connection_error, status_error
 
-import groq_api
-import queue_runner
-from queue_runner import QueueRunner
+from cl10n.core import groq_api
+from cl10n import queue_runner
+from cl10n.queue_runner import QueueRunner
 
 
 def run(runner):
@@ -464,7 +464,7 @@ def test_atomic_write_leaves_no_partial_file(workspace, job_factory, monkeypatch
     workspace.write_queue([job_factory()])
     original = workspace.read_queue()
 
-    import l10n_store
+    from cl10n import l10n_store
 
     def explode(_src, _dst):
         raise OSError("disk full")
@@ -782,7 +782,7 @@ async def test_groq_translator_unwraps_the_envelope_and_asks_for_json():
 
 
 def test_build_queue_emits_schema_valid_deduplicated_jobs(schemas, tmp_path):
-    import build_queue
+    from cl10n import build_queue
 
     doc = tmp_path / "doc.md"
     doc.write_text(

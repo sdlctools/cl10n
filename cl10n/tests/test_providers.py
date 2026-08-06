@@ -21,26 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 
 import httpx
 import openai
 import pytest
 from conftest import connection_error, status_error
 
-CL10N = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(CL10N)
-import sys  # noqa: E402
-sys.path[:0] = [CL10N, os.path.join(REPO, "app")]
-
-# The conftest helpers special-case groq's APITimeoutError (request-only ctor)
-# but the openai twin is a different class, so build it inline.
-_NVIDIA_REQUEST = httpx.Request("POST", "https://integrate.api.nvidia.com/v1/chat/completions")
-
-
-def _openai_api_timeout():
-    return openai.APITimeoutError(request=_NVIDIA_REQUEST)
-
-from providers import (  # noqa: E402
+from cl10n.providers import (
     ProviderConfig,
     Registry,
     build_translator,
@@ -49,8 +37,16 @@ from providers import (  # noqa: E402
     load_registry,
     resolve_route,
 )
-from providers import nvidia as nvidia_mod  # noqa: E402
-from providers.base import _retry_after as _base_retry_after  # noqa: E402
+from cl10n.providers import nvidia as nvidia_mod
+from cl10n.providers.base import _retry_after as _base_retry_after
+
+# The conftest helpers special-case groq's APITimeoutError (request-only ctor)
+# but the openai twin is a different class, so build it inline.
+_NVIDIA_REQUEST = httpx.Request("POST", "https://integrate.api.nvidia.com/v1/chat/completions")
+
+
+def _openai_api_timeout():
+    return openai.APITimeoutError(request=_NVIDIA_REQUEST)
 
 
 # --------------------------------------------------------------------------
@@ -257,15 +253,18 @@ def test_the_registry_pairs_a_translator_with_its_own_classify():
 
 
 def test_the_groq_connector_is_not_shadowed_by_the_groq_library():
-    """`cl10n/providers/groq.py` and the `groq` PyPI package share a name.
+    """`cl10n/providers/groq.py` and the `groq` PyPI package share a leaf name.
 
-    The library is normally already in `sys.modules` (queue_runner imports it
-    for nothing else than its exception taxonomy), so resolving the connector
-    by module *name* returns the library and the lookup dies with
-    `module 'groq' has no attribute 'GroqTranslator'` — which is exactly what
-    happened before connectors were loaded by file path. This pins that fix:
-    with the real library imported first, the registry must still find the
-    connector's class, and the library must survive intact.
+    Before the package layout, both were reachable as the bare top-level name
+    `groq`. The library is normally already in `sys.modules` (the connector
+    imports it for its exception taxonomy), so resolving the connector by
+    module *name* returned the library, and the lookup died with
+    `module 'groq' has no attribute 'GroqTranslator'`.
+
+    The package resolves it: the connector is only ever
+    `cl10n.providers.groq`, the library only ever `groq`, and the two names
+    cannot alias. With the real library imported first, the registry must
+    still find the connector's class, and the library must survive intact.
     """
     import groq as groq_library  # the PyPI package, imported first on purpose
 
@@ -275,11 +274,14 @@ def test_the_groq_connector_is_not_shadowed_by_the_groq_library():
     translator = build_translator(r.get("groq"), "some/model")
     assert type(translator).__name__ == "GroqTranslator"
     assert translator.model == "some/model"
-    # Loaded from cl10n/providers/groq.py, not from the site-packages library.
-    module_file = sys.modules[type(translator).__module__].__file__
+    # Resolved inside the package, not to the site-packages library.
+    assert type(translator).__module__ == "cl10n.providers.groq"
+    module_file = sys.modules["cl10n.providers.groq"].__file__
     assert module_file.endswith(os.path.join("cl10n", "providers", "groq.py"))
-    # And the library is still the library.
+    # And the library is still the library — the connector reached the real
+    # one, which is what its `classify` maps exceptions from.
     assert hasattr(groq_library, "AsyncGroq")
+    assert sys.modules["cl10n.providers.groq"].groq is groq_library
 
 
 def test_an_unknown_connector_module_fails_with_a_clear_message(tmp_path):
@@ -333,7 +335,7 @@ def test_load_creds_file_missing_file_is_a_noop(monkeypatch):
 # class hierarchy, Retry-After on the error's own headers rather than a
 # `.response`, and a content field that may be a chunk list rather than a str.
 
-from providers import mistral as mistral_mod  # noqa: E402
+from cl10n.providers import mistral as mistral_mod  # noqa: E402
 
 _MISTRAL_REQUEST = httpx.Request("POST", "https://api.mistral.ai/v1/chat/completions")
 

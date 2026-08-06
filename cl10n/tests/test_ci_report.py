@@ -8,14 +8,8 @@ named rather than crashing the step that most needs to produce a body.
 
 from __future__ import annotations
 
-import os
-import sys
-
-CL10N = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path[:0] = [CL10N, os.path.join(os.path.dirname(CL10N), "app")]
-
-import ci_report  # noqa: E402
-import l10n_store  # noqa: E402
+from cl10n import ci_report  # noqa: E402
+from cl10n import l10n_store  # noqa: E402
 
 
 def _plan(**overrides):

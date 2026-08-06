@@ -31,18 +31,22 @@ colon (they are `vendor/model` or `vendor/tag`).
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import inspect
 import os
 import re
-import sys
 import tomllib
 from dataclasses import dataclass
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_CL10N = os.path.dirname(_HERE)
-# `providers.toml` lives beside the registry, in `cl10n/`.
-DEFAULT_CONFIG = os.path.join(_CL10N, "providers.toml")
+from cl10n import resources
+
+# `providers.toml` ships inside the wheel, beside the runtime modules, and is
+# located as package data rather than relative to this file — see
+# `cl10n/resources.py`.
+DEFAULT_CONFIG = resources.path("providers.toml")
+
+# Where a bare `connector = "groq:GroqTranslator"` is looked up. A dotted name
+# is imported as-is, so a connector can live in another distribution.
+_CONNECTOR_PACKAGE = __name__  # "cl10n.providers"
 
 # `provider:model` — the provider name is a leading identifier up to the first
 # colon; everything after is the model. A model id containing a colon would
@@ -187,35 +191,21 @@ def resolve_route(
 def _load_connector_module(module_name: str):
     """Import a connector module, lazily, resolving it unambiguously.
 
-    **A bare connector name is loaded from this directory by file path, never
-    by module name.** `cl10n/providers/groq.py` and the `groq` PyPI package
-    share the top-level name `groq`, and the library is usually already in
-    `sys.modules` — so `importlib.import_module("groq")` returns the *library*
-    and the connector lookup fails with a confusing
-    `module 'groq' has no attribute 'GroqTranslator'`. Loading by path also
-    means the providers directory never has to go on `sys.path`, which is what
-    would break `import groq` inside the connector itself.
+    **A bare connector name is qualified against this package before import**,
+    so `connector = "groq:GroqTranslator"` reaches `cl10n.providers.groq` and
+    never the `groq` PyPI library. That distinction used to require loading
+    the file by path: as bare top-level modules, `groq` the connector and
+    `groq` the library competed for one name in `sys.modules`, and the library
+    (usually imported first) won — the lookup then died with a baffling
+    `module 'groq' has no attribute 'GroqTranslator'`. Inside a package the
+    two names cannot collide, and this is an ordinary import again.
 
-    A dotted name (`my_pkg.connector`) is treated as a real importable module,
-    for a future connector that lives outside this directory.
+    A dotted name (`my_pkg.connector`) is imported as given, for a connector
+    that lives outside this package.
     """
     if "." in module_name:
         return importlib.import_module(module_name)
-
-    key = f"_cl10n_providers_{module_name}"
-    if key in sys.modules:
-        return sys.modules[key]
-    path = os.path.join(_HERE, f"{module_name}.py")
-    if not os.path.exists(path):
-        raise ModuleNotFoundError(
-            f"connector module {module_name!r} not found at {path}"
-        )
-    spec = importlib.util.spec_from_file_location(key, path)
-    module = importlib.util.module_from_spec(spec)
-    # Registered before exec so a connector importing itself does not recurse.
-    sys.modules[key] = module
-    spec.loader.exec_module(module)
-    return module
+    return importlib.import_module(f"{_CONNECTOR_PACKAGE}.{module_name}")
 
 
 def _import_connector(connector_spec: str):

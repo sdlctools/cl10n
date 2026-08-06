@@ -43,9 +43,9 @@ because the target is rebuilt from the source tree.
 module *reports* the fallback hashes a run produced; writing them into
 `l10n/manifest.json` belongs to the orchestrator.
 
-    venv/bin/python3 cl10n/reassemble.py --langs he,ru
-    venv/bin/python3 cl10n/reassemble.py --langs he md/skills/_shared/project-config.md
-    venv/bin/python3 cl10n/reassemble.py --langs he,ru --dry-run
+    venv/bin/python3 -m cl10n.reassemble --langs he,ru
+    venv/bin/python3 -m cl10n.reassemble --langs he md/skills/_shared/project-config.md
+    venv/bin/python3 -m cl10n.reassemble --langs he,ru --dry-run
 """
 
 from __future__ import annotations
@@ -58,19 +58,13 @@ import re
 import sys
 from dataclasses import dataclass, field
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-# This package plus `app/`, which owns the parser (`utils`) and the segmenter
-# (`tree_diff`). Bare scripts rather than an installed package is the repo's
-# existing convention — see `cl10n/queue_runner.py`.
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
+from markdown_it.tree import SyntaxTreeNode
 
-from markdown_it.tree import SyntaxTreeNode  # noqa: E402
-
-import tree_diff  # noqa: E402  (app/, path fixed up above)
-from l10n_store import TranslationMemory, atomic_write_text  # noqa: E402
-from placeholders import describe as describe_lost  # noqa: E402
-from placeholders import lost_placeholders  # noqa: E402
-from utils import ast_to_markdown, markdown_to_ast, parse_inline  # noqa: E402
+from cl10n.core import tree_diff
+from cl10n.core.utils import ast_to_markdown, markdown_to_ast, parse_inline
+from cl10n.l10n_store import TranslationMemory, atomic_write_text
+from cl10n.placeholders import describe as describe_lost
+from cl10n.placeholders import lost_placeholders
 
 # Reassembly is a *consumer* of tree_diff's segmentation, not a second
 # implementation of it: the unit set, each unit's source string and its

@@ -21,52 +21,32 @@ classification.
 
 from __future__ import annotations
 
-import importlib.util
-import os
-import sys
 
+# THE NAME COLLISION, AND WHY IT IS NOW A NON-EVENT.
+#
+# This module is `cl10n.providers.groq` and the PyPI library is `groq`. Before
+# the package existed, both were reachable as the bare top-level name `groq`,
+# and the whole file was arranged around keeping them apart: the providers
+# directory had to stay off `sys.path` (or `import groq` here found *itself*),
+# and `base` had to be loaded from an explicit file path because importing it
+# by name would have required exactly that.
+#
+# Inside a package, Python 3's absolute-import rule settles it: `import groq`
+# below is unambiguously the top-level library, and the sibling is only ever
+# reachable as `cl10n.providers.groq`. The two names cannot alias. That is
+# what makes the imports below ordinary — the collision is resolved by the
+# layout, not by any ordering this file has to maintain.
+# `test_providers.py` pins it: it asserts the connector got the real library.
+import groq  # the groq PyPI library — exception taxonomy
 
-def _load_sibling(name: str, path: str):
-    """Import a module from an explicit file path, once, by cache key.
-
-    Inlined in each connector rather than shared, because a shared helper would
-    itself have to be imported by name — the problem this solves.
-    """
-    key = f"_cl10n_providers_{name}"
-    if key in sys.modules:
-        return sys.modules[key]
-    spec = importlib.util.spec_from_file_location(key, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[key] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_CL10N = os.path.dirname(_HERE)
-_APP = os.path.join(os.path.dirname(_CL10N), "app")
-# `prompt`, `groq_api` live in app/ as bare modules (the repo's
-# scripts-in-a-directory convention). `_HERE` is deliberately NOT put on the
-# path: this file is `cl10n/providers/groq.py` and the PyPI `groq` library
-# share the top-level name `groq`, so a providers dir on `sys.path` would make
-# `import groq` below find *this* connector instead of the library — a circular
-# import that only shows up at first use.
-sys.path[:0] = [_APP]
-
-import groq  # noqa: E402  (the groq PyPI library — exception taxonomy)
-import groq_api  # noqa: E402  (app/ — DEFAULT_MODEL for the connector fallback)
-
-# `base` is loaded from its file path rather than by name, so this works
-# identically however the connector was reached: `python3 cl10n/queue_runner.py`
-# (no package), the registry's `cl10n.providers.groq` import, or pytest
-# collection. Importing by name would need the providers dir on the path, which
-# is exactly what the `groq` collision above forbids.
-_base = _load_sibling("base", os.path.join(_HERE, "base.py"))
-Failure = _base.Failure
-_message = _base._message
-_retry_after = _base._retry_after
-_base_classify = _base.classify
-extract_translation = _base.extract_translation
+from cl10n.core import groq_api  # DEFAULT_MODEL for the connector fallback
+from cl10n.providers.base import (
+    Failure,
+    _message,
+    _retry_after,
+    extract_translation,
+)
+from cl10n.providers.base import classify as _base_classify
 
 
 def classify(exc: BaseException) -> Failure:

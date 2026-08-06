@@ -10,14 +10,7 @@ ever seen fail is indistinguishable from one that cannot fail.
 from __future__ import annotations
 
 import copy
-import os
-import sys
-
-CL10N = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(CL10N)
-sys.path[:0] = [CL10N, os.path.join(REPO, "app")]
-
-import compat_check  # noqa: E402
+from cl10n import compat_check  # noqa: E402
 
 
 def test_the_installed_libraries_match_the_recorded_baseline():

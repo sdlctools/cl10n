@@ -4,11 +4,11 @@ import asyncio
 from typing import List, Dict, Any
 from groq import AsyncGroq
 
-# The provider-agnostic prompt, its version, and the language-name table moved
-# to `app/prompt.py` (the pluggable-provider home, CLN-1). They are re-exported
-# here so existing imports (`groq_api.PROMPT_VERSION`, etc.) keep working, but
-# the canonical import is `app.prompt`.
-from prompt import (  # noqa: F401  (re-export)
+# The provider-agnostic prompt, its version, and the language-name table live
+# in `cl10n/core/prompt.py` (the pluggable-provider home, CLN-1). They are
+# re-exported here so existing imports (`groq_api.PROMPT_VERSION`, etc.) keep
+# working, but the canonical import is `cl10n.core.prompt`.
+from cl10n.core.prompt import (  # noqa: F401  (re-export)
     TRANSLATION_PROMPT,
     PROMPT_VERSION,
     LANG_NAMES,

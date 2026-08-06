@@ -30,9 +30,9 @@ import subprocess
 
 from markdown_it.tree import SyntaxTreeNode
 
-import tree_diff
-from l10n_store import atomic_write_text
-from utils import ast_to_markdown, markdown_to_ast
+from cl10n.core import tree_diff
+from cl10n.l10n_store import atomic_write_text
+from cl10n.core.utils import ast_to_markdown, markdown_to_ast
 
 MANIFEST_SCHEMA = "manifest/v1"
 DEFAULT_MANIFEST = "l10n/manifest.json"

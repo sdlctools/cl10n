@@ -17,10 +17,10 @@ renderer can get wrong:
   verbatim, so the placeholder gate should pass on every unit — and a run that
   reports violations is reporting a bug in the renderer, not in the data.
 
-    venv/bin/python3 cl10n/pseudo_tm.py --langs he,ru --tm-dir /tmp/tm
-    venv/bin/python3 cl10n/reassemble.py --langs he,ru --tm-dir /tmp/tm --out-dir /tmp/locales
+    python -m cl10n.pseudo_tm --langs he,ru --tm-dir /tmp/tm
+    python -m cl10n.reassemble --langs he,ru --tm-dir /tmp/tm --out-dir /tmp/locales
 
-For a translation memory with real meaning, run `cl10n/queue_runner.py`.
+For a translation memory with real meaning, run `cl10n run`.
 """
 
 from __future__ import annotations
@@ -31,14 +31,11 @@ import os
 import re
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
+from markdown_it.tree import SyntaxTreeNode
 
-from markdown_it.tree import SyntaxTreeNode  # noqa: E402
-
-import tree_diff  # noqa: E402
-from l10n_store import TranslationMemory  # noqa: E402
-from utils import ast_to_markdown, markdown_to_ast  # noqa: E402
+from cl10n.core import tree_diff
+from cl10n.core.utils import ast_to_markdown, markdown_to_ast
+from cl10n.l10n_store import TranslationMemory
 
 MODEL = "pseudo/localizer"
 PROMPT_VERSION = "pseudo"
