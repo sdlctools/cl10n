@@ -414,8 +414,8 @@ pyproject.toml / back-merge / branch-delete sequence as above.
    | field | value |
    | --- | --- |
    | PyPI project | `cl10n` |
-   | Owner | `kantorv` |
-   | Repository | `markdown-localization` |
+   | Owner | `sdlctools` |
+   | Repository | `cl10n` |
    | Workflow | `release.yml` |
    | Environment | `pypi` |
 

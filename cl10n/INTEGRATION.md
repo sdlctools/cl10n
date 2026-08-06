@@ -86,7 +86,7 @@ maintain a copy.
 If you must:
 
 ```bash
-UPSTREAM=/path/to/markdown-localization
+UPSTREAM=/path/to/cl10n
 PROJECT=/path/to/your-project
 
 cp -r "$UPSTREAM/cl10n" "$PROJECT/cl10n"

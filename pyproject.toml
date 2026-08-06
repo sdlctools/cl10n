@@ -93,9 +93,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kantorv/markdown-localization"
-Repository = "https://github.com/kantorv/markdown-localization"
-Issues = "https://github.com/kantorv/markdown-localization/issues"
+Homepage = "https://github.com/sdlctools/cl10n"
+Repository = "https://github.com/sdlctools/cl10n"
+Issues = "https://github.com/sdlctools/cl10n/issues"
 
 # The four subcommands, identical for a human and for CI.
 [project.scripts]

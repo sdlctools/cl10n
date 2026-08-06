@@ -15,9 +15,9 @@ name: Reviewer Skill on PR (FCC + NVIDIA-NIM + CLAUDE demo)
 #           - "minimaxai/minimax-m3"
 
 
-# Trigger: a `/fcc-review` comment on a PR (issue_comment), restricted to OWNER
-# or MEMBER commenters — issue_comment fires for any commenter on a public repo,
-# so that author check is the security boundary.
+# Trigger: a `/fcc-review` comment on a PR (issue_comment), restricted to
+# OWNER, MEMBER or COLLABORATOR commenters — issue_comment fires for any
+# commenter on a public repo, so that author check is the security boundary.
 #
 # The command may be bare or followed by a space or newline and free-form
 # prose — `/fcc-review the auth changes only`. A parse step strips the command
@@ -57,7 +57,9 @@ jobs:
        startsWith(github.event.comment.body, '/fcc-review ') ||
        startsWith(github.event.comment.body, format('/fcc-review{0}', fromJSON('"\n"'))) ||
        startsWith(github.event.comment.body, format('/fcc-review{0}', fromJSON('"\r"')))) &&
-      github.event.comment.author_association == 'OWNER'
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR')
 
     runs-on: ubuntu-latest
     name: Check PR exists
@@ -145,7 +147,7 @@ jobs:
         # Full history + every remote ref: the linked worktree is built from a
         # fetched origin/<head>, and we stand on the PR's base branch, both of
         # which a shallow single-branch clone doesn't have.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
