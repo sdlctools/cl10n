@@ -314,8 +314,8 @@ jobs:
     # workflow can do for itself. The `cl10n` project needs a trusted
     # publisher for:
     #
-    #     owner       kantorv
-    #     repository  markdown-localization
+    #     owner       sdlctools
+    #     repository  cl10n
     #     workflow    release.yml
     #     environment pypi
     #
