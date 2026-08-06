@@ -1,4 +1,4 @@
-from utils import markdown_to_xml, ast_to_markdown, markdown_to_ast
+from cl10n.core.utils import markdown_to_xml, ast_to_markdown, markdown_to_ast
 
 
 

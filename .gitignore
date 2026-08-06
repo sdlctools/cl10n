@@ -5,11 +5,29 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Build artifacts — `python -m build` output and the editable-install metadata.
+# Reproduced from the checkout on demand; the wheel that ships is the one CI
+# builds at the released version.
+build/
+dist/
+*.egg-info/
+
 # l10n run artifacts — queue files are per-run state, never committed
 # (.claude/rules/l10n-pipeline-spec.md §6)
 l10n/queue/
 
-# Local provider credentials — read by app/queue_runner.py --creds-file
+# Local provider credentials — read by cl10n/queue_runner.py via each
+# provider's `api_key_creds_file` in cl10n/providers.toml (or --creds-file).
+#
+# Deliberately wide, and every widening here was a near-miss rather than
+# caution: `nvidia-nim-creds.txt` arrived while only `*_creds.txt` was ignored,
+# and editing a creds file left a `.mistral-creds.txt.swp` holding the key in
+# plain text that no `*.txt` pattern matches. Anything whose name says "creds"
+# is ignored whatever its extension, editor swap and backup files included.
+*creds*
+.*creds*
 groq_creds.txt
+nvidia-nim-creds.txt
+mistral-creds.txt
 
 .pytest_cache/

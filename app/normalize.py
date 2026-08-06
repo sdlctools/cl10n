@@ -1,18 +1,9 @@
 from __future__ import annotations
 
-import hashlib
-import os
-import re
 import sys
-from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from markdown_it.tree import SyntaxTreeNode
-
-from utils import ast_to_markdown, markdown_to_ast
+from cl10n.core.utils import ast_to_markdown, markdown_to_ast
 
 
 

@@ -6,9 +6,9 @@ keep the file on disk an accurate picture of progress at all times. It does not
 decide *what* to translate (that is `tree_diff.plan`) and does not turn
 translations back into Markdown (that is reassembly).
 
-    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json
-    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run
-    venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --concurrency 8
+    venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json
+    venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json --dry-run
+    venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json --concurrency 8
 
 Three things carry the design, all from spec §4:
 
@@ -50,23 +50,14 @@ import asyncio
 import json
 import os
 import random
-import re
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Protocol
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-# This package plus `app/`, which owns the prompt (`groq_api`) and the planner
-# (`tree_diff`). Bare scripts rather than an installed package is the repo's
-# existing convention — see `app/tree_diff.py`.
-sys.path[:0] = [_HERE, os.path.join(os.path.dirname(_HERE), "app")]
-
-import groq  # noqa: E402  (imported for its exception taxonomy — see classify)
-import groq_api  # noqa: E402  (app/, path fixed up above)
-from l10n_store import TranslationMemory, load_queue, save_queue, utc_now  # noqa: E402
-from placeholders import describe as _describe_lost  # noqa: E402
-from placeholders import lost_placeholders  # noqa: E402
+from cl10n.core import prompt as prompt_mod  # the provider-agnostic prompt + PROMPT_VERSION
+from cl10n.l10n_store import TranslationMemory, load_queue, save_queue, utc_now
+from cl10n.placeholders import describe as _describe_lost
+from cl10n.placeholders import lost_placeholders
 
 TERMINAL_STATES = {"done", "rejected"}
 
@@ -77,81 +68,48 @@ DEFAULT_TM_DIR = "l10n/tm"
 BACKOFF_BASE = 1.0  # seconds
 BACKOFF_CAP = 60.0
 
+# Fallback model for `QueueRunner.model` when neither the route nor the
+# injected translator carries one. Mirrors `providers.toml`'s `[providers.groq]
+# default_model` — the backward-compatible default — so a test that builds a
+# runner with a `StubTranslator(model="stub/model")` gets "stub/model", but one
+# built without a `model` gets Groq's default, as it did pre-CLN-1.
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+
 
 # --------------------------------------------------------------------------
-# Failure classification
+# Failure classification, envelope extraction, the Translator seam (CLN-1)
 # --------------------------------------------------------------------------
+#
+# These moved to `cl10n/providers/` behind the pluggable-provider seam:
+# `Failure`, `_retry_after`, `_message`, `extract_translation`, and the
+# `Translator` Protocol live in `providers.base` (provider-agnostic); the Groq
+# `classify`/`GroqTranslator` live in `providers.groq`. They are re-exported
+# here so the tests and any caller importing `queue_runner.Failure`,
+# `queue_runner.classify`, `queue_runner.GroqTranslator`,
+# `queue_runner.extract_translation` keep working — adding a provider no longer
+# adds a branch to the runner, so these re-exports are the backward-compat
+# surface, not the implementation.
+#
+# `groq.classify` is the *default provider's* classifier. The runner holds the
+# resolved provider's `classify` as `self.classify` (set by `main()` to the
+# connector whose translator is in use), and falls back to this one when a
+# translator is injected directly (tests, `--dry-run`).
 
+from cl10n.providers.base import (  # noqa: E402,F401  (_message/_retry_after: re-export only)
+    Failure,
+    Translator,
+    _message,
+    _retry_after,
+    extract_translation,
+)
+from cl10n.providers.groq import GroqTranslator, classify  # noqa: E402
 
-@dataclass(frozen=True)
-class Failure:
-    """One attempt's outcome when it wasn't a usable translation.
-
-    `kind` is the schema's error kind; `retryable` decides which edge out of
-    `failed` the job takes.
-    """
-
-    kind: str  # rate_limit | network | api_error | placeholder_lost
-    detail: str
-    retryable: bool
-    retry_after: float | None = None  # provider-stated wait, seconds
-
-    def as_error(self) -> dict:
-        return {"kind": self.kind, "detail": self.detail, "at": utc_now()}
-
-
-def _retry_after(exc) -> float | None:
-    """Seconds from a `Retry-After` header, when the provider sent one.
-
-    Only the delta-seconds form is honoured; the HTTP-date form is rare from
-    JSON APIs and a bad parse is worse than falling back to our own backoff.
-    """
-    response = getattr(exc, "response", None)
-    raw = getattr(response, "headers", {}).get("retry-after") if response else None
-    if raw is None:
-        return None
-    try:
-        seconds = float(str(raw).strip())
-    except ValueError:
-        return None
-    return seconds if seconds >= 0 else None
-
-
-def classify(exc: BaseException) -> Failure:
-    """Map a provider exception onto the schema's error kinds (spec §4/§5).
-
-    Retryable: 429, 5xx, request timeouts, connection loss — the failures that
-    say "not now" rather than "not ever". Terminal: authentication, malformed
-    request, unsupported model or language, and anything unrecognised. An
-    unrecognised exception is usually a bug in *this* code, and retrying a bug
-    three times only bills for it three times.
-    """
-    if isinstance(exc, groq.RateLimitError):
-        return Failure("rate_limit", _message(exc), True, _retry_after(exc))
-    if isinstance(exc, groq.APITimeoutError):
-        return Failure("network", f"request timed out: {_message(exc)}", True)
-    if isinstance(exc, groq.APIConnectionError):
-        return Failure("network", _message(exc), True)
-    if isinstance(exc, groq.APIStatusError):
-        status = getattr(exc, "status_code", 0) or 0
-        # 5xx and 408/409 are "try again"; 401/403/400/404/422 never will be.
-        retryable = status >= 500 or status in (408, 409, 429)
-        return Failure(
-            "rate_limit" if status == 429 else "api_error",
-            f"HTTP {status}: {_message(exc)}",
-            retryable,
-            _retry_after(exc),
-        )
-
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-        return Failure("network", "request timed out", True)
-    if isinstance(exc, (ConnectionError, OSError)):
-        return Failure("network", _message(exc), True)
-    return Failure("api_error", f"{type(exc).__name__}: {_message(exc)}", False)
-
-
-def _message(exc: BaseException) -> str:
-    return " ".join(str(exc).split()) or type(exc).__name__
+# The default-classifier alias is the default provider's (Groq), so a
+# `QueueRunner` constructed by a test with an injected translator falls back to
+# classifying the way the runner always did — every existing `classify` test
+# exercises this path (it builds `Groq`-shaped groq exceptions). `main()`
+# overrides `classify` with the resolved provider's when it wires the runner.
+DEFAULT_CLASSIFY = classify
 
 
 # --------------------------------------------------------------------------
@@ -215,79 +173,15 @@ def placeholder_gate(source: str, translation: str, placeholders) -> Failure | N
 
 
 # --------------------------------------------------------------------------
-# Provider
+# Provider seam — see `cl10n/providers/` (re-exported above)
 # --------------------------------------------------------------------------
-
-
-class Translator(Protocol):
-    """What the runner needs from a provider, and nothing else.
-
-    Returning the translated *text* (not a raw completion) is what keeps the
-    JSON-envelope handling below a Groq detail and lets a test stub be three
-    lines long — AC7's "no test requires a live API key" falls out of the seam
-    being this narrow.
-    """
-
-    async def translate(self, prompt: str) -> str: ...
-
-
-_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
-
-
-def extract_translation(content: str) -> str:
-    """Pull the translation out of the model's reply.
-
-    `TRANSLATION_PROMPT` rule 4 asks for a JSON object, and the model obliges —
-    `{"translation": "..."}`. Handing that raw string to the TM (which is what
-    `groq_api.translate_text` does today) stores the envelope as if it were the
-    translation. Tolerant by design: a bare string, a fenced block, or an object
-    under any of the plausible keys all resolve, because a hard parse failure
-    here would reject a translation that was actually fine.
-    """
-    text = content.strip()
-    candidate = _FENCE.sub("", text).strip()
-    try:
-        parsed = json.loads(candidate)
-    except (ValueError, TypeError):
-        return text
-    if isinstance(parsed, str):
-        return parsed.strip()
-    if isinstance(parsed, dict):
-        for key in ("translation", "translated_text", "text", "output"):
-            value = parsed.get(key)
-            if isinstance(value, str):
-                return value.strip()
-        # A single-key object under an unexpected name is still unambiguous.
-        if len(parsed) == 1:
-            (value,) = parsed.values()
-            if isinstance(value, str):
-                return value.strip()
-    return text
-
-
-class GroqTranslator:
-    """`Translator` backed by the Groq async client."""
-
-    def __init__(self, model: str | None = None, client=None, max_tokens: int = 4096):
-        self.model = model or groq_api.DEFAULT_MODEL
-        self._client = client
-        self.max_tokens = max_tokens
-
-    @property
-    def client(self):
-        if self._client is None:
-            self._client = groq_api.get_client()
-        return self._client
-
-    async def translate(self, prompt: str) -> str:
-        completion = await self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=self.max_tokens,
-            response_format={"type": "json_object"},
-        )
-        return extract_translation(completion.choices[0].message.content or "")
+#
+# `Translator`, `extract_translation`, `GroqTranslator`, `classify`, `Failure`
+# are imported from `cl10n/providers/` near the top of this module. The default
+# provider's `classify` is available as `DEFAULT_CLASSIFY`; the resolved
+# provider's `classify` is injected into each `QueueRunner` by `main()`.
+# Adding a provider is a `providers.toml` entry plus a connector module —
+# nothing here changes (CLN-1).
 
 
 # --------------------------------------------------------------------------
@@ -307,10 +201,14 @@ def build_prompt(job: dict, lost: list[str] | None = None) -> str:
     disambiguate with, the previous revision to reuse wording from, the
     placeholders a failed attempt dropped. The prompt's *rules* are untouched,
     which is why `PROMPT_VERSION` stays where it is.
+
+    The prompt template and `PROMPT_VERSION` are provider-agnostic
+    (`cl10n/core/prompt.py`, moved out of the Groq connector in CLN-1): every
+    connector sends identical rules, so a TM shortcut fires across providers.
     """
-    lang_name = groq_api.LANG_NAMES.get(job["lang"], job["lang"])
+    lang_name = prompt_mod.LANG_NAMES.get(job["lang"], job["lang"])
     parts = [
-        groq_api.TRANSLATION_PROMPT.format(
+        prompt_mod.TRANSLATION_PROMPT.format(
             target_lang=lang_name, text_to_translate=job["source"]
         )
     ]
@@ -377,6 +275,12 @@ class QueueRunner:
 
     `sleep` and `rng` are injected so tests can assert the backoff schedule
     without spending it, and so a retry storm is reproducible.
+
+    `classify` is the provider connector's failure classifier — the one that
+    knows the translator's exception taxonomy. `main()` injects the resolved
+    provider's; a test that builds a runner with an injected translator gets
+    `DEFAULT_CLASSIFY` (the default provider's, Groq), which is what every
+    existing `classify` test exercises (it raises Groq-shaped exceptions).
     """
 
     def __init__(
@@ -392,13 +296,15 @@ class QueueRunner:
         clock=time.monotonic,
         rng: random.Random | None = None,
         on_event=None,
+        classify=DEFAULT_CLASSIFY,
     ):
         self.queue_path = queue_path
         self.translator = translator
         self.tm_dir = tm_dir
         self.concurrency = max(1, concurrency)
         self.request_timeout = request_timeout
-        self.model = model or getattr(translator, "model", groq_api.DEFAULT_MODEL)
+        self.model = model or getattr(translator, "model", DEFAULT_GROQ_MODEL)
+        self.classify = classify
         self._sleep = sleep
         self._rng = rng or random.Random()
         self._on_event = on_event or (lambda *_: None)
@@ -528,7 +434,7 @@ class QueueRunner:
                 else await coro
             )
         except Exception as exc:  # noqa: BLE001 — classified, never swallowed
-            return classify(exc), ""
+            return self.classify(exc), ""
         return (
             placeholder_gate(job["source"], translation, job["placeholders"]),
             translation,
@@ -544,7 +450,7 @@ class QueueRunner:
         hash shared by two documents, and makes a restart cheap.
         """
         entry = self._tm(job["lang"]).get(job["unit_hash"])
-        if not entry or entry.get("prompt_version") != groq_api.PROMPT_VERSION:
+        if not entry or entry.get("prompt_version") != prompt_mod.PROMPT_VERSION:
             return False
         job["state"] = "done"
         job["error"] = None
@@ -569,7 +475,7 @@ class QueueRunner:
             source=job["source"],
             translation=translation,
             model=self.model,
-            prompt_version=groq_api.PROMPT_VERSION,
+            prompt_version=prompt_mod.PROMPT_VERSION,
             action=job["action"],
         )
         tm.save()
@@ -613,7 +519,7 @@ class QueueRunner:
                 already.append(job["id"])
                 continue
             entry = self._tm(job["lang"]).get(job["unit_hash"])
-            if entry and entry.get("prompt_version") == groq_api.PROMPT_VERSION:
+            if entry and entry.get("prompt_version") == prompt_mod.PROMPT_VERSION:
                 would_skip.append(job["id"])
             else:
                 would_call.append(job["id"])
@@ -638,25 +544,28 @@ class QueueRunner:
 # CLI
 # --------------------------------------------------------------------------
 
+from cl10n.providers import (  # noqa: E402
+    build_translator,
+    get_classify,
+    load_creds_file,
+    load_registry,
+    resolve_route,
+)
 
-def _load_key_file(path: str) -> None:
-    """Read `GROQ_API_KEY="..."` out of a creds file into the environment.
 
-    Convenience for local runs only — CI passes the variable directly, and the
-    file this reads is gitignored.
+def build_arg_parser(registry=None) -> argparse.ArgumentParser:
+    """The runner's CLI surface.
+
+    `--provider` and a `--model` of the form `provider:model` select the
+    connector (CLN-1 AC1); a bare `--model` resolves against the selected
+    provider's default. `registry` (loaded from `providers.toml`) feeds the
+    help text so the choices are discoverable; tests pass `None` and the
+    parser still works (the help just lists no concrete values).
     """
-    if not os.path.exists(path):
-        return
-    with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            match = re.match(r'\s*(?:export\s+)?GROQ_API_KEY\s*=\s*["\']?([^"\'\s]+)', line)
-            if match:
-                os.environ.setdefault("GROQ_API_KEY", match.group(1))
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
+    declared = registry.names() if registry else []
+    default = registry.default if registry else "groq"
     parser = argparse.ArgumentParser(
-        description="Execute a translation queue against the Groq API, resumably."
+        description="Execute a translation queue against a configured provider, resumably."
     )
     parser.add_argument("queue", help="path to l10n/queue/queue.json")
     parser.add_argument("--tm-dir", default=DEFAULT_TM_DIR,
@@ -665,22 +574,43 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=f"in-flight requests (default: {DEFAULT_CONCURRENCY})")
     parser.add_argument("--request-timeout", type=float, default=DEFAULT_REQUEST_TIMEOUT,
                         help="per-request timeout in seconds; 0 disables")
+    parser.add_argument("--provider", default=None,
+                        choices=declared or None,
+                        help=f"select the connector (default: {default}); "
+                             f"declared: {', '.join(declared or [default])}")
     parser.add_argument("--model", default=None,
-                        help=f"provider model (default: {groq_api.DEFAULT_MODEL})")
+                        help="model id, optionally 'provider:model' to also route "
+                             "(bare resolves against the selected provider's default)")
     parser.add_argument("-n", "--dry-run", action="store_true",
                         help="report what would be called; contacts nothing")
-    parser.add_argument("--creds-file", default="groq_creds.txt",
-                        help="file to read GROQ_API_KEY from when it is unset")
+    parser.add_argument("--creds-file", default=None,
+                        help="file to read the active provider's API key from when "
+                             "the env var is unset (overrides providers.toml)")
+    parser.add_argument("--providers", default=None,
+                        help="path to providers.toml (default: cl10n/providers.toml)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    # Load the registry early so a bad providers.toml fails before parsing the
+    # rest, and so help text can name the declared providers. The model prefix
+    # is part of --model, so argparse needs the registry to present choices.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--providers", default=None)
+    pre.add_argument("--dry-run", action="store_true")
+    pre.add_argument("--provider", default=None)
+    pre.add_argument("--model", default=None)
+    known, rest = pre.parse_known_args(argv)
+    registry = load_registry(known.providers)
+    args = build_arg_parser(registry).parse_args(argv)
+
+    route = resolve_route(registry, model=args.model, provider=args.provider)
+    cfg = registry.get(route.provider)
 
     if args.dry_run:
         runner = QueueRunner(args.queue, translator=None, tm_dir=args.tm_dir,
-                             concurrency=args.concurrency, model=args.model)
+                             concurrency=args.concurrency, model=route.model)
         report = runner.dry_run()
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -694,19 +624,24 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    CALL {job_id}")
         return 0
 
-    _load_key_file(args.creds_file)
-    if not os.environ.get("GROQ_API_KEY"):
-        print("GROQ_API_KEY is not set (and no creds file found) — use --dry-run "
+    # Load the active provider's key: an explicit --creds-file wins, else the
+    # provider's declared creds file (gitignored), else nothing (CI sets env).
+    creds_path = args.creds_file or cfg.api_key_creds_file
+    load_creds_file(creds_path, cfg.api_key_env)
+    if not os.environ.get(cfg.api_key_env):
+        print(f"{cfg.api_key_env} is not set (and no creds file found) — use --dry-run "
               "to plan without a provider.", file=sys.stderr)
         return 2
 
+    translator = build_translator(cfg, route.model)
     runner = QueueRunner(
         args.queue,
-        translator=GroqTranslator(model=args.model),
+        translator=translator,
         tm_dir=args.tm_dir,
         concurrency=args.concurrency,
         request_timeout=args.request_timeout or None,
-        model=args.model,
+        model=route.model,
+        classify=get_classify(cfg),
         on_event=lambda kind, job: print(f"  {kind:9} {job['id']}", file=sys.stderr),
     )
     summary = asyncio.run(runner.run())

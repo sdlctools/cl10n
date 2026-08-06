@@ -106,6 +106,12 @@ jobs:
   # only when there is an OPEN PR on a feature/*|hotfix/* branch, so a dispatch
   # from the wrong branch — or a branch with no open PR — fails here, before a
   # human is ever asked to approve a run and before a token is spent.
+  #
+  # No author/owner condition here: GitHub already requires write access on the
+  # repository to trigger a workflow_dispatch, so that access control is
+  # GitHub's own, not this workflow's. An org-owned repo has no "owner"
+  # identity a human ever matches, so a `github.repository_owner` guard would
+  # not narrow that access — it would block everyone.
   check_branch:
     runs-on: ubuntu-latest
     name: Check dispatch branch & open PR
@@ -113,7 +119,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    if: github.triggering_actor == github.repository_owner
     outputs:
       pr_exists: ${{ steps.check_branch.outputs.pr_exists }}
       pr_number: ${{ steps.check_branch.outputs.pr_number }}
@@ -198,7 +203,7 @@ jobs:
         # Full history + every remote ref: the linked worktree is built from a
         # fetched origin/<head>, and we stand on the PR's base branch, both of
         # which a shallow single-branch clone doesn't have.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

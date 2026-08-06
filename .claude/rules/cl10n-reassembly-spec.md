@@ -19,9 +19,9 @@ wherever the two disagree.
 ## Use it
 
 ```bash
-venv/bin/python3 cl10n/reassemble.py --langs he,ru                  # md/**/*.md → locales/
-venv/bin/python3 cl10n/reassemble.py --langs he md/skills/x/SKILL.md
-venv/bin/python3 cl10n/reassemble.py --langs he,ru --dry-run --report l10n/render.json
+venv/bin/python3 -m cl10n.reassemble --langs he,ru                  # md/**/*.md → locales/
+venv/bin/python3 -m cl10n.reassemble --langs he md/skills/x/SKILL.md
+venv/bin/python3 -m cl10n.reassemble --langs he,ru --dry-run --report l10n/render.json
 ```
 
 Exit 1 on a placeholder violation or a structure mismatch. `--fail-on-fallback`

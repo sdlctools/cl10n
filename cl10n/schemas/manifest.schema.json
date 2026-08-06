@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/kantorv/markdown-localization/app/schemas/manifest.schema.json",
+  "$id": "https://github.com/sdlctools/cl10n/cl10n/schemas/manifest.schema.json",
   "title": "Localization manifest (committed: l10n/manifest.json)",
   "description": "Per-document ledger: last-localized revision, unit inventory (RETIRE GC reference counts), per-language completion. See .claude/rules/l10n-pipeline-spec.md §6.",
   "type": "object",

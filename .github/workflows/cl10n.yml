@@ -30,11 +30,21 @@
 # queue the second run behind the first rather than racing it for the TM
 # files. GitHub additionally collapses a queued backlog to the newest run.
 #
-# SECRETS (AC6): GROQ_API_KEY is exposed to exactly one step (Execute), which
-# talks only to the provider and prints job ids, never request contents. The
-# workflow runs on `push` to the default branch and on manual dispatch only —
-# it has no pull_request/pull_request_target trigger, so code from a fork can
-# never execute in a context that holds the secret.
+# SECRETS (AC6/AC7): the active provider's key is exposed to exactly one step
+# (Execute), which talks only to the provider and prints job ids, never request
+# contents. The workflow runs on `push` to the default branch and on manual
+# dispatch only — it has no pull_request/pull_request_target trigger, so code
+# from a fork can never execute in a context that holds the secret.
+#
+# PLUGGABLE PROVIDERS (CLN-1): all declared provider secrets land on the one
+# Execute step's `env:` — the runner reads only the active provider's env var
+# (`api_key_env` in `cl10n/providers.toml`), so an unused secret sits unread,
+# never exposed further. The single-secret-per-run property is preserved in
+# the sense that matters: exactly one step ever holds a provider key, and the
+# repo never gains a pull_request trigger. `PROVIDER` selects the connector
+# (empty = the default, Groq — backward compatible); a `provider:model`
+# prefix on `MODEL` routes too. Override either via the dispatch inputs or by
+# setting the env here for a different default.
 
 name: cl10n
 
@@ -43,7 +53,20 @@ on:
     branches: [development]
     paths:
       - "md/**"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    # Resume a run, or push through a provider override (CLN-1). Empty inputs
+    # reproduce an ordinary push: default provider, no model override.
+    inputs:
+      provider:
+        description: "Provider to run ('' for the default, groq; e.g. nvidia)"
+        required: false
+        default: ""
+        type: string
+      model:
+        description: "Model id, optionally 'provider:model' to also route"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: cl10n
@@ -66,6 +89,12 @@ env:
   LANGS: he,ru
   PR_BRANCH: cl10n/translations
   QUEUE: l10n/queue/queue.json
+  # Provider selection (CLN-1 AC7): empty/omitted → default (Groq); "nvidia"
+  # (or a `provider:` prefix on MODEL) runs NVIDIA. Both real keys are passed
+  # only to the Execute step below; the runner reads the one its active
+  # connector names in providers.toml.
+  PROVIDER: ""
+  MODEL: ""
 
 jobs:
   localize:
@@ -88,9 +117,14 @@ jobs:
           cache: pip
 
       - name: Install dependencies
+        # The package plus every provider SDK, so any `PROVIDER` this run may
+        # be dispatched with can be routed to. Not `-r requirements.txt`: that
+        # is the contributor setup and additionally drags in pytest, build and
+        # twine, none of which a localization run has any use for. Installing
+        # the package is what puts the `cl10n` console script on the path.
         run: |
           python -m venv venv
-          venv/bin/pip install --quiet -r requirements.txt
+          venv/bin/pip install --quiet ".[all-providers]"
 
       - name: Recover state from the open localization PR branch
         # Layer 2: a finished run whose PR nobody merged yet. Its TM is real,
@@ -146,7 +180,7 @@ jobs:
           for dir in /tmp/salvage/pr-branch /tmp/salvage/artifact; do
             [ -d "$dir" ] && restore_flags="$restore_flags --restore-tm $dir"
           done
-          venv/bin/python3 cl10n/cli.py plan --langs "$LANGS" \
+          venv/bin/cl10n plan --langs "$LANGS" \
             -o "$QUEUE" --report /tmp/plan-report.json $restore_flags
           jobs=$(venv/bin/python3 -c "import json; print(json.load(open('/tmp/plan-report.json'))['jobs'])")
           render=$(venv/bin/python3 -c "import json; print(str(json.load(open('/tmp/plan-report.json'))['render_required']).lower())")
@@ -164,13 +198,26 @@ jobs:
         # resumes from the committed + salvaged memory. The non-zero exit for
         # rejected jobs is likewise not a workflow failure: rejected units
         # render as English fallbacks and are re-planned next run.
+        #
+        # Both declared provider keys are on this one step (CLN-1 AC7): the
+        # runner reads only the active connector's `api_key_env`, so the unused
+        # key is bound but never read or printed. Adding a third provider's
+        # secret here is the only change a new provider needs in this file.
         id: run
         if: steps.plan.outputs.jobs != '0'
         continue-on-error: true
         timeout-minutes: 150
         env:
+          PROVIDER: ${{ github.event.inputs.provider || '' }}
+          MODEL: ${{ github.event.inputs.model || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: venv/bin/python3 cl10n/cli.py run "$QUEUE" -c 8
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: |
+          args=(venv/bin/cl10n run "$QUEUE" -c 8)
+          [ -n "$PROVIDER" ] && args+=(--provider "$PROVIDER")
+          [ -n "$MODEL" ] && args+=(--model "$MODEL")
+          "${args[@]}"
 
       - name: Upload the translation memory as a crash artifact
         # Runs even when Execute failed or timed out — this is layer 3 for the
@@ -190,12 +237,12 @@ jobs:
         if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
         continue-on-error: true
         run: |
-          venv/bin/python3 cl10n/cli.py render --langs "$LANGS" \
+          venv/bin/cl10n render --langs "$LANGS" \
             --queue "$QUEUE" --report /tmp/render-report.json
 
       - name: Status
         if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
-        run: venv/bin/python3 cl10n/cli.py status --langs "$LANGS" || true
+        run: venv/bin/cl10n status --langs "$LANGS" || true
 
       - name: Open or update the pull request
         if: steps.plan.outputs.jobs != '0' || steps.plan.outputs.render_required == 'true'
@@ -219,7 +266,7 @@ jobs:
           # subsumed. The PR (if open) follows the branch.
           git push --force origin "$PR_BRANCH"
 
-          venv/bin/python3 cl10n/ci_report.py \
+          venv/bin/python3 -m cl10n.ci_report \
             --plan /tmp/plan-report.json --queue "$QUEUE" \
             --render /tmp/render-report.json -o /tmp/pr-body.md
 

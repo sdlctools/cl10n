@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/kantorv/markdown-localization/app/schemas/queue.schema.json",
+  "$id": "https://github.com/sdlctools/cl10n/cl10n/schemas/queue.schema.json",
   "title": "Translation queue (run artifact: l10n/queue/queue.json — never committed)",
   "description": "Ordered set of LLM jobs for one run. Resumption is derived from this file alone. See .claude/rules/l10n-pipeline-spec.md §4.",
   "type": "object",

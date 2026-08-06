@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/kantorv/markdown-localization/app/schemas/translation-memory.schema.json",
+  "$id": "https://github.com/sdlctools/cl10n/cl10n/schemas/translation-memory.schema.json",
   "title": "Translation memory (one file per language: l10n/tm/<lang>.json)",
   "description": "Keyed by translation-unit hash as produced by tree_diff.hash_tree. See .claude/rules/l10n-pipeline-spec.md §3.",
   "type": "object",

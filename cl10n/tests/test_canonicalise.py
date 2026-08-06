@@ -1,4 +1,4 @@
-"""`app/utils.make_parser` — the one parser configuration everything shares.
+"""`cl10n.core.utils.make_parser` — the one parser configuration everything shares.
 
 Every unit hash in the pipeline is taken over this parser's output, so a change
 here moves translation-memory keys and silently orphans existing translations.
@@ -17,16 +17,9 @@ be canonicalised, hashed, planned or localized.
 
 from __future__ import annotations
 
-import os
-import sys
-
 import pytest
 
-CL10N = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(CL10N)
-sys.path[:0] = [CL10N, os.path.join(REPO, "app")]
-
-from utils import ast_to_markdown, markdown_to_ast  # noqa: E402
+from cl10n.core.utils import ast_to_markdown, markdown_to_ast  # noqa: E402
 
 
 def canonicalise(md: str) -> str:
@@ -106,8 +99,8 @@ def test_an_alert_marker_is_protected_from_translation():
     in `_placeholders` would protect it, and a model that translates it yields
     a blockquote that only looks like an alert.
     """
-    import tree_diff
-    from placeholders import lost_placeholders
+    from cl10n.core import tree_diff
+    from cl10n.placeholders import lost_placeholders
 
     canonical = canonicalise("> [!NOTE]\n> Useful information here.\n")
     item = next(i for i in tree_diff.plan("", canonical) if i.action == "TRANSLATE")
@@ -120,8 +113,8 @@ def test_an_alert_marker_is_protected_from_translation():
 
 
 def test_an_alert_survives_a_translated_splice():
-    import reassemble
-    import tree_diff
+    from cl10n import reassemble
+    from cl10n.core import tree_diff
 
     src = "> [!WARNING]\n> Do not do that.\n"
     entries = {
@@ -141,7 +134,7 @@ def test_a_task_list_is_hashable_and_segmented():
     a document containing one could not be canonicalised at all — no hash, no
     plan, no localization.
     """
-    import tree_diff
+    from cl10n.core import tree_diff
     from markdown_it.tree import SyntaxTreeNode
 
     src = "# Checklist\n\n- [ ] first item\n- [x] second item\n"
@@ -167,8 +160,8 @@ def test_a_task_lists_checkbox_state_survives_a_translated_splice():
     `task-list-item` with no checkbox for mdformat to read. That raises, so a
     single translated checklist would take its whole document down.
     """
-    import reassemble
-    import tree_diff
+    from cl10n import reassemble
+    from cl10n.core import tree_diff
 
     src = "# Checklist\n\n- [ ] not done yet\n- [x] already done\n\nA paragraph.\n"
     entries = {

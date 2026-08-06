@@ -21,11 +21,11 @@ import os
 import pytest
 from markdown_it.tree import SyntaxTreeNode
 
-import pseudo_tm
-import reassemble
-import tree_diff
-from l10n_store import TranslationMemory
-from utils import markdown_to_ast
+from cl10n import pseudo_tm
+from cl10n import reassemble
+from cl10n.core import tree_diff
+from cl10n.l10n_store import TranslationMemory
+from cl10n.core.utils import markdown_to_ast
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CORPUS = [

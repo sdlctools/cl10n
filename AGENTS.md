@@ -11,13 +11,54 @@ There is n working pipeline, our task is to research this operation.
 * python3 (use `venv/bin/python3` as interpreter — the venv is `venv/`, not `.venv/`)
 
 
+## `cl10n` is an installed package, not a directory of scripts
+
+The pipeline is distributed on PyPI as **`cl10n`** and is imported, invoked and
+tested as an installed package. There are no runnable script paths any more:
+`venv/bin/python3 cl10n/cli.py …` and `venv/bin/python3 app/tree_diff.py …`
+are gone, deliberately and without shims.
+
+```bash
+python -m venv venv
+venv/bin/pip install -r requirements.txt     # -e .[dev] — the contributor setup
+venv/bin/cl10n status --langs he,ru          # the console script
+venv/bin/python3 -m cl10n.compat_check       # everything else: python -m
+```
+
+A consumer installs from PyPI and takes only the provider they route to:
+
+```bash
+pip install cl10n[groq]        # or cl10n[nvidia], cl10n[mistral], cl10n[all-providers]
+cl10n plan --langs he,ru
+```
+
+`pyproject.toml` owns the build (hatchling), the pinned parsing stack, the
+per-provider extras and the `cl10n` console script. Package data —
+`providers.toml`, `compat-baseline.json`, `fixtures/kitchen-sink.md`,
+`schemas/*.json` — ships in the wheel and is reached through
+[`cl10n/resources.py`](cl10n/resources.py) (`importlib.resources`), **never**
+by a path relative to `__file__`. `.github/workflows/checks.yml`'s
+`clean-install` job builds the wheel and exercises it from a directory holding
+no checkout, which is the only place a `__file__`-relative regression shows up.
+
+
 ## folders structure
 * demos/  - some intermediate test scripts
 * md - source markdown files (mostly taken from other projects)
-* app - working examples, this where you put new files
-* cl10n/ - the continuous-localization runtime (queue runner, state store,
-  reassembly/render, its tests). New pipeline components go here, not in app/,
-  so the runtime stays reviewable on its own.
+* app - leftover research scripts (`normalize.py`, `md_to_xml_demo.py`); **not
+  packaged**, and not where new pipeline code goes
+* cl10n/ - the installable package: the continuous-localization runtime (queue
+  runner, state store, reassembly/render, its tests). New pipeline components
+  go here.
+  * cl10n/core/ - the provider-agnostic core: `tree_diff`, `utils` (the parser
+    every hash is taken over), `prompt`, `groq_api`
+  * cl10n/providers/ - one connector module per provider, plus the registry
+    that loads `cl10n/providers.toml` and routes `--provider` / `provider:model`
+  * cl10n/schemas/ - the three JSON Schema contracts + worked examples
+  * cl10n/fixtures/ - `kitchen-sink.md`, the drift detector's subject (ships in
+    the wheel, which is why it is not under `cl10n/tests/`)
+  * cl10n/tests/ - the suite; **excluded from the wheel**, because it tests
+    *this repository*
 * locales/ - rendered translations, `locales/<lang>/` mirroring `md/` (committed)
 * l10n/ - pipeline state: `tm/<lang>.json` and `manifest.json` committed,
   `queue/` gitignored
@@ -26,14 +67,14 @@ There is n working pipeline, our task is to research this operation.
 
 ## change detection (which branches need translation)
 
-`app/tree_diff.py` is the working implementation: it Merkle-hashes both AST
+`cl10n/core/tree_diff.py` is the working implementation: it Merkle-hashes both AST
 revisions, aligns each sibling level with LCS, and emits per-translation-unit
 actions (REUSE / RECHECK / REVISE / TRANSLATE / RETIRE, plus COPY for changed
 code fences and other opaque blocks) with heading-trail context and the inline
 placeholders that must survive translation.
 
 ```bash
-venv/bin/python3 app/tree_diff.py OLD.md NEW.md
+venv/bin/python3 -m cl10n.core.tree_diff OLD.md NEW.md
 ```
 
 The reasoning behind it — why tree edit distance is the wrong tool here, why the
@@ -49,36 +90,53 @@ The full-pipeline architecture — TM lookup, queue, execution, placeholder
 gate, reassembly, render, git policy — is specified in
 [`.claude/rules/l10n-pipeline-spec.md`](.claude/rules/l10n-pipeline-spec.md),
 with the three JSON data contracts (translation memory, queue, manifest) in
-`app/schemas/*.schema.json` and validated worked examples from the real `md/`
-corpus in `app/schemas/examples/`. Pipeline components must implement against
+`cl10n/schemas/*.schema.json` and validated worked examples from the real `md/`
+corpus in `cl10n/schemas/examples/`. Pipeline components must implement against
 those schemas.
 
 ## cl10n/ — the localization runtime (step 7: executing the queue)
 
 `cl10n/queue_runner.py` takes a queue file and drives it to completion against
-Groq: bounded concurrency, per-job retry with exponential backoff and jitter,
-an account-wide rate-limit gate, the placeholder gate, and translation-memory
-writes with provenance. It resumes from wherever a previous run stopped —
-kill it at any point and re-run it; `done` and `rejected` jobs are never
-re-billed.
+a configured provider: bounded concurrency, per-job retry with exponential
+backoff and jitter, an account-wide rate-limit gate, the placeholder gate, and
+translation-memory writes with provenance. It resumes from wherever a previous
+run stopped — kill it at any point and re-run it; `done` and `rejected` jobs
+are never re-billed.
 
 ```bash
-venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json --dry-run  # plan only, no API
-venv/bin/python3 cl10n/queue_runner.py l10n/queue/queue.json -c 8
-venv/bin/python3 cl10n/build_queue.py --langs he,ru -o l10n/queue/queue.json
+venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json --dry-run  # plan only, no API
+venv/bin/python3 -m cl10n.queue_runner l10n/queue/queue.json -c 8
+venv/bin/python3 -m cl10n.queue_runner QUEUE --provider nvidia          # pick a provider
+venv/bin/python3 -m cl10n.queue_runner QUEUE --model nvidia:some/model  # prefix routes too
+venv/bin/python3 -m cl10n.build_queue --langs he,ru -o l10n/queue/queue.json
 ```
 
-`GROQ_API_KEY` comes from the environment, or from `groq_creds.txt`
-(gitignored) via `--creds-file`. `cl10n/l10n_store.py` holds the atomic-write,
-queue and TM primitives; `cl10n/build_queue.py` is **dev scaffolding** that
-plans the corpus against the empty document — it is not the pipeline's real
-enqueue step, which belongs to its own sub-task.
+**Providers are pluggable and declared in `cl10n/providers.toml`** — a name,
+its connector module, default model, and the env var (plus optional gitignored
+creds file) its key comes from. Three ship: Groq is the default
+(`GROQ_API_KEY`), NVIDIA uses the `openai` library against
+`https://integrate.api.nvidia.com/v1` (`NVIDIA_NIM_API_KEY`), and Mistral uses
+its own `mistralai` SDK (`MISTRAL_API_KEY`). `--provider` selects one, and a
+`provider:model` prefix on `--model` both selects and sets the model; with
+neither, behavior is exactly as before. Each connector lives in its own module
+under `cl10n/providers/` and brings its own client and exception mapping, so
+**adding a provider is a config entry plus a module — no runner change**. The
+shared prompt, `PROMPT_VERSION` and `LANG_NAMES` are provider-agnostic in
+`cl10n/core/prompt.py`, which is why the translation memory is shared across providers
+rather than re-billed when you switch.
+
+`cl10n/l10n_store.py` holds the atomic-write, queue and TM primitives;
+`cl10n/build_queue.py` is **dev scaffolding** that plans the corpus against the
+empty document — it is not the pipeline's real enqueue step, which belongs to
+its own sub-task.
 
 The design — write orderings, resumption, retry classification, why the
-rate-limit gate is account-wide rather than per-job, when `PROMPT_VERSION`
-may be bumped, and what must not move into `cl10n/` — is in
+rate-limit gate is account-wide rather than per-job, the provider seam and how
+to add one, when `PROMPT_VERSION` may be bumped, and what must not move into
+`cl10n/` — is in
 [`.claude/rules/cl10n-runner-spec.md`](.claude/rules/cl10n-runner-spec.md).
-Read it before changing concurrency, retries, persistence, or prompts.
+Read it before changing concurrency, retries, persistence, providers, or
+prompts.
 
 Measured on the real corpus (30 units, `he`, free-tier account at 8000 TPM):
 232s serially vs 156s at `-c 8`, and the shared rate-limit gate took the run
@@ -97,9 +155,9 @@ render re-parses its own output and refuses to write a file whose block
 structure moved.
 
 ```bash
-venv/bin/python3 cl10n/reassemble.py --langs he,ru                    # md/**/*.md → locales/
-venv/bin/python3 cl10n/reassemble.py --langs he md/skills/x/SKILL.md
-venv/bin/python3 cl10n/reassemble.py --langs he,ru --dry-run --report l10n/render.json
+venv/bin/python3 -m cl10n.reassemble --langs he,ru                    # md/**/*.md → locales/
+venv/bin/python3 -m cl10n.reassemble --langs he md/skills/x/SKILL.md
+venv/bin/python3 -m cl10n.reassemble --langs he,ru --dry-run --report l10n/render.json
 ```
 
 `cl10n/placeholders.py` holds the placeholder-integrity rule, enforced both by
@@ -120,10 +178,10 @@ subcommands for a human and for CI, and no bootstrap mode: a first-time
 translation is an incremental update whose previous revision recovers empty.
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan   --langs he,ru      # manifest + git blobs → queue
-venv/bin/python3 cl10n/cli.py run    l10n/queue/queue.json -c 8
-venv/bin/python3 cl10n/cli.py render --langs he,ru      # TM → locales/, manifest, RETIRE GC
-venv/bin/python3 cl10n/cli.py status --langs he,ru      # coverage per language
+venv/bin/cl10n plan   --langs he,ru      # manifest + git blobs → queue
+venv/bin/cl10n run    l10n/queue/queue.json -c 8
+venv/bin/cl10n render --langs he,ru      # TM → locales/, manifest, RETIRE GC
+venv/bin/cl10n status --langs he,ru      # coverage per language
 ```
 
 `plan` is the real enqueue step: it recovers each document's last-localized
@@ -150,37 +208,52 @@ worked flows — first localization, adding a language, day-to-day updates —
 plus a cookbook and a troubleshooting table. Read the spec for *why*, the
 guide for *how*. [`cl10n/INTEGRATION.md`](cl10n/INTEGRATION.md) covers
 vendoring the pipeline into another repository, which has its own failure
-modes: which files to copy (not `cl10n/tests/` — they test *this* repo), what
-committing actually buys, and the one-manifest-per-repository rule that
-silently deletes translations if you invert it.
+modes: which files to copy (not `cl10n/tests/` — they test *this* repo, and
+`cl10n/providers/` is a directory the `*.py` glob misses), what committing
+actually buys, and the one-manifest-per-repository rule that silently deletes
+translations if you invert it.
+
+**Adding a provider: [`cl10n/PROVIDERS.md`](cl10n/PROVIDERS.md)** — the
+step-by-step for teaching the pipeline a new LLM API. One TOML entry plus one
+connector module; the runner and the CLI are never edited. Covers the
+`classify` kinds table, the lazy-client and no-runner-branching invariants, the
+`groq` name-collision trap, the test bar (no key, no network) and the CI secret
+wiring.
 
 ## the parsing stack is pinned, and drift is checked
 
-`requirements.txt` pins markdown-it-py, mdit-py-plugins, mdformat,
-mdformat-gfm, mdformat-frontmatter and linkify-it-py **exactly**. Every unit
-hash in every translation memory is taken over `app/utils.make_parser`, which
+`pyproject.toml`'s `[project] dependencies` pins markdown-it-py,
+mdit-py-plugins, mdformat, mdformat-gfm, mdformat-frontmatter and
+linkify-it-py **exactly** (`requirements.txt` is now a thin pointer at it,
+carrying the rationale in short form). Every unit
+hash in every translation memory is taken over `cl10n.core.utils.make_parser`, which
 is those packages in one configuration — a minor upgrade twice taught
 markdown-it-py to parse something (task lists, GitHub alerts) that mdformat
 cannot render, and an unrenderable construct cannot be localized at all.
 
 ```bash
-venv/bin/python3 cl10n/compat_check.py            # gate for moving a pin
-venv/bin/python3 cl10n/compat_check.py --update   # re-record; then read the diff
+venv/bin/python3 -m cl10n.compat_check            # gate for moving a pin
+venv/bin/python3 -m cl10n.compat_check --update   # re-record; then read the diff
 ```
 
 It checks the parser's option surface, its renderable node types, and the
-canonical form plus unit hashes of `cl10n/tests/fixtures/kitchen-sink.md`
+canonical form plus unit hashes of `cl10n/fixtures/kitchen-sink.md`
 against `cl10n/compat-baseline.json`. `.github/workflows/checks.yml` runs it
 and the test suite on every push and PR, plus weekly against the newest
 releases as early warning. Rationale and the three drift classes:
 [`.claude/rules/tree-diff-spec.md`](.claude/rules/tree-diff-spec.md) →
 "The parser configuration is part of the contract".
 
+The provider libraries (`groq`, `openai`, `mistralai`) are **not** part of that
+contract — they never touch a hash — so they are unpinned, live in optional
+extras, and upgrade freely.
+
 ## tests
 
 ```bash
 venv/bin/python3 -m pytest                                            # full suite
 venv/bin/python3 -m pytest cl10n/tests/test_queue_runner.py -k NAME   # one test
+venv/bin/python3 -m pytest cl10n/tests/test_providers.py              # registry + connectors
 venv/bin/python3 -m pytest cl10n/tests/test_compat.py                 # drift detector
 ```
 
@@ -189,6 +262,9 @@ makes a network call. The reassembly tests run against the real `md/` corpus
 with a pseudolocalized memory, so they cover both target languages end to end.
 The orchestrator tests build a real throwaway git repo per test and drive the
 full `plan → run → render` cycle, including a mid-run kill and resume.
+`test_providers.py` covers the registry, `--provider`/model-prefix routing and
+each connector's exception mapping — constructing a translator must stay
+key-free and network-free.
 
 ## python libs in use
 W're dealing with complex markdown structires (gfm compatible) and  hardly rely on mdformat, merkdown-it-py packages, and their plugins.. See how to process markdown to ast and vice versa.
@@ -308,9 +384,17 @@ Normal release flow:
    - publishes the GitHub Release,
    - writes `X.Y.Z` (no leading `v`) into `pyproject.toml`'s `version`
      field, commits, and pushes to `main`,
+   - builds the wheel and the sdist **from that bumped tree** and hands
+     them to the `publish-pypi` job,
    - back-merges `main` into `development` (opens a PR instead if it
      conflicts — the sync is never force-pushed),
    - deletes the `release/sprint-X.Y.Z` branch.
+5. The separate `publish-pypi` job then uploads the distribution to PyPI
+   via **Trusted Publishing** (OIDC, `id-token: write`, environment
+   `pypi`). There is no `PYPI_TOKEN` secret and there must not be one.
+   It runs last and is independent: a failed upload leaves the tag, the
+   GitHub Release, the version bump and the back-merge all intact, and
+   can be re-run on its own.
 
 Hotfix flow (SDLC §4) — for an emergency fix to production, not routine
 work: branch `hotfix/<slug>` off `main`, PR it into `main`. On merge,
@@ -318,12 +402,26 @@ work: branch `hotfix/<slug>` off `main`, PR it into `main`. On merge,
 always patch-bumps the latest tag, then runs the same tag / release / bump
 pyproject.toml / back-merge / branch-delete sequence as above.
 
-**Scope note:** this only makes versioning PyPI/PEP 440-compatible
-(`pyproject.toml`'s `version` field is kept current) — no step in either
-workflow publishes to PyPI. A future publish step (e.g. `twine` or
-`pypa/gh-action-pypi-publish`) can consume `pyproject.toml` directly once
-that's needed.
+**Prerequisites**, both one-time and both outside any workflow's reach:
 
-**Prerequisite:** the repo setting "Allow GitHub Actions to create and
-approve pull requests" must be enabled for `cut-release.yml`'s
-`gh pr create --draft` step to succeed.
+1. The repo setting "Allow GitHub Actions to create and approve pull
+   requests" must be enabled for `cut-release.yml`'s `gh pr create --draft`
+   step to succeed.
+2. **PyPI must have a trusted publisher registered for this repository**, or
+   `publish-pypi` fails with `invalid-publisher` and every other part of the
+   release still succeeds. On pypi.org → *Publishing*, register:
+
+   | field | value |
+   | --- | --- |
+   | PyPI project | `cl10n` |
+   | Owner | `sdlctools` |
+   | Repository | `cl10n` |
+   | Workflow | `release.yml` |
+   | Environment | `pypi` |
+
+   Before the first release the project does not exist yet, so this is added
+   as a **pending publisher** — which also reserves the name. The name was
+   free on PyPI when this was written, but that is a fact with a shelf life:
+   check before the first release, and if it has been taken, changing
+   `[project] name` in `pyproject.toml` is the only edit needed (the import
+   name `cl10n` is independent of the distribution name).

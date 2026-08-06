@@ -4,6 +4,16 @@ import asyncio
 from typing import List, Dict, Any
 from groq import AsyncGroq
 
+# The provider-agnostic prompt, its version, and the language-name table live
+# in `cl10n/core/prompt.py` (the pluggable-provider home, CLN-1). They are
+# re-exported here so existing imports (`groq_api.PROMPT_VERSION`, etc.) keep
+# working, but the canonical import is `cl10n.core.prompt`.
+from cl10n.core.prompt import (  # noqa: F401  (re-export)
+    TRANSLATION_PROMPT,
+    PROMPT_VERSION,
+    LANG_NAMES,
+)
+
 # The Groq client is built on first use, not at import: AsyncGroq raises when
 # GROQ_API_KEY is unset, which would make this module unimportable on a machine
 # without credentials — including CI, where the runner's tests stub the provider
@@ -17,39 +27,10 @@ def get_client() -> AsyncGroq:
         _client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
     return _client
 
-# Your translation prompt template
-TRANSLATION_PROMPT = """You are an expert technical document translator. Your task is to translate natural language prose blocks into target languages while strictly preserving all technical syntax, formatting, and variables.
-
-CRITICAL RULES:
-1. Translate ONLY the natural language prose/text intended for human reading.
-2. DO NOT translate, modify, or remove any of the following elements under any circumstances:
-   - Variable placeholders and bracketed keys (e.g., <PROJECT-KEY>, <DEFAULT_BASE_BRANCH>, $ARGUMENTS, ${{CLAUDE_PLUGIN_ROOT}}).
-   - File paths, directory references, and script names (e.g., jira.sh, jira.ps1, SKILL.md, ../_shared/project-config.md).
-   - CLI commands, options, and flags (e.g., --role assigner, --project, git branch, git worktree add).
-   - Inline tags, code wrappers, or formatting tokens (e.g., <code_inline>, markdown backticks, bold/italic markers if embedded).
-3. Maintain the technical tone, professional context, and precise meaning of the original documentation.
-4. Return your output strictly as a valid JSON object matching the requested schema without adding conversational filler.
-
-Translate the following English text into {target_lang}:
-
-{text_to_translate}
-"""
-
-# Version of TRANSLATION_PROMPT above, recorded on every translation memory
-# entry (spec §3). Bump it when the CRITICAL RULES change — that is what makes
-# older entries eligible for a refresh run. Per-job framing the runner wraps
-# around this template (heading-trail context, the REVISE pair, the corrective
-# retry instruction) is payload, not rules, and does not bump this.
-PROMPT_VERSION = "v1"
-
-# Default model for the prompt above.
+# Default model for the Groq connector. Mirrors the value in
+# `cl10n/providers.toml` under `[providers.groq] default_model`; kept here too
+# because this module predates the registry and the demo functions below use it.
 DEFAULT_MODEL = "openai/gpt-oss-120b"
-
-# Language name mapping for prompts
-LANG_NAMES = {
-    "he": "Hebrew",
-    "ru": "Russian"
-}
 
 async def translate_text(text: str, target_lang: str) -> str:
     """

@@ -6,8 +6,12 @@
 #   2. tag the merge commit vX.Y.Z (pure SemVer, no sprint suffix — §5 note)
 #   3. publish the GitHub Release (= "deploy main to Production" — there's
 #      no separate deploy step for this repo)
-#   4. back-merge main -> development  (§3 Phase 4 step 6 / §4 Step 4)
-#   5. delete the release/hotfix branch (§3 Phase 4 step 7)
+#   4. build the wheel + sdist at the bumped version, hand them to the
+#      `publish-pypi` job (CLN-2)
+#   5. back-merge main -> development  (§3 Phase 4 step 6 / §4 Step 4)
+#   6. delete the release/hotfix branch (§3 Phase 4 step 7)
+#
+# then, as a separate downstream job, publish to PyPI via Trusted Publishing.
 #
 # Only fires for release/* and hotfix/* head branches — a feature PR merged
 # straight into main does NOT trigger a release (the `if:` guard below).
@@ -17,8 +21,10 @@
 # you want the back-merge commit to re-trigger the validator workflow, set a
 # RELEASE_PAT secret and swap GH_TOKEN/GIT_AUTHOR/PAT comments below.
 #
-# This workflow bumps pyproject.toml's version field for PyPI/PEP 440
-# compatibility but does NOT publish to PyPI — no publish step exists yet.
+# This workflow bumps pyproject.toml's version field, builds the distribution
+# from the bumped tree, and publishes it to PyPI from the `publish-pypi` job
+# below via Trusted Publishing (OIDC) — no PYPI_TOKEN secret is involved.
+# That job carries the one-time registration prerequisite in its own comment.
 # See AGENTS.md -> Releasing.
 name: Release
 
@@ -189,16 +195,37 @@ jobs:
           NEXT_NO_V="${NEXT#v}"
           # The previous steps ran on a detached merge_commit_sha; check out main.
           git checkout -B main origin/main
-          # pyproject.toml is minimal (a single `version = "..."` line under
-          # [project]), so a targeted regex substitution is simpler and safer
-          # here than pulling in a TOML-writing dependency for one field. This
-          # only keeps versioning PyPI/PEP 440-compatible — it does NOT publish
-          # to PyPI (see AGENTS.md -> Releasing).
+          # pyproject.toml carries exactly one `version = "..."` line (under
+          # [project]; nothing else in the file matches the anchored pattern),
+          # so a targeted regex substitution is simpler and safer here than
+          # pulling in a TOML-writing dependency for one field.
           sed -i -E 's/^version = ".*"$/version = "'"${NEXT_NO_V}"'"/' pyproject.toml
           grep -q "version = \"${NEXT_NO_V}\"" pyproject.toml
           git add pyproject.toml
           git commit -m "chore: bump version to ${NEXT_NO_V}"
           git push origin main
+
+      - name: Build the distribution at the released version
+        # AFTER the bump, and from the bumped tree: the previous step is what
+        # put ${NEXT_NO_V} into pyproject.toml, and hatchling reads the
+        # version straight out of that field. Building any earlier would
+        # produce an artifact labelled with the *previous* version, which PyPI
+        # would either reject as a duplicate or accept as the wrong release —
+        # and PyPI files are immutable, so neither is repairable.
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --upgrade build twine
+          rm -rf dist
+          python3 -m build
+          twine check dist/*
+          ls -l dist/
+
+      - name: Hand the distribution to the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
+          if-no-files-found: error
 
       - name: Back-merge main into development
         id: sync
@@ -267,4 +294,56 @@ jobs:
               *)      echo "- sync   : back-merge PR opened — ${SYNCED}" ;;
             esac
             echo "- cleanup: deleted \`${HEAD_REF}\`"
+            echo "- pypi   : see the \`Publish to PyPI\` job"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-pypi:
+    # Trusted Publishing (OIDC), CLN-2 AC8. A separate job because both
+    # things it needs are job-scoped and neither belongs on the release job:
+    # `id-token: write` (the OIDC claim PyPI verifies) and `environment`
+    # (what a trusted publisher is registered against, and where a reviewer
+    # can be required later). Scoping the token here also means the release
+    # job never holds a credential that can publish a package.
+    #
+    # There is no PYPI_TOKEN secret and there must not be one: a long-lived
+    # upload token is a credential that leaks, gets forgotten, and outlives
+    # whoever created it. The token this job uses is minted per run and
+    # expires with it.
+    #
+    # PREREQUISITE — a one-time manual registration on pypi.org, which no
+    # workflow can do for itself. The `cl10n` project needs a trusted
+    # publisher for:
+    #
+    #     owner       sdlctools
+    #     repository  cl10n
+    #     workflow    release.yml
+    #     environment pypi
+    #
+    # For the very first release, register it as a *pending* publisher (PyPI
+    # → "Publishing" → "Add a pending publisher"), which also reserves the
+    # name. Until that registration exists this job fails with
+    # `invalid-publisher`. See AGENTS.md → Releasing.
+    name: Publish to PyPI
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The release itself already happened — the tag, the GitHub Release, the
+    # version bump and the back-merge are all in `release`, and this job is
+    # downstream of every one of them. A red X here therefore means "the
+    # upload needs a human", not "the release is broken": re-run this job, or
+    # upload `dist/` from the tag by hand. What it must never do is strand
+    # the repository mid-release, which is why it is last and separate.
+    permissions:
+      id-token: write   # mint the OIDC token; nothing else is needed
+    environment:
+      name: pypi
+      url: https://pypi.org/p/cl10n
+    steps:
+      - name: Download the distribution built by the release job
+        uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,8 +1,9 @@
 """Shared fixtures and provider stubs for the queue-runner tests.
 
 Nothing here contacts a provider and nothing reads `GROQ_API_KEY`: every test
-in this suite runs against a stub (AC7). `app/` goes on the path because the
-project's modules are scripts in a directory, not an installed package.
+in this suite runs against a stub (AC7). The pipeline is imported as the
+installed `cl10n` package; `REPO` is only for the fixtures that need this
+*checkout* (the `md/` corpus, the workflow files), never for imports.
 """
 
 from __future__ import annotations
@@ -10,16 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 
 import httpx
 import pytest
 
-CL10N = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(CL10N)
-sys.path[:0] = [CL10N, os.path.join(REPO, "app")]
+from cl10n import l10n_store, resources
 
-import l10n_store  # noqa: E402
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # --------------------------------------------------------------------------
@@ -125,10 +123,14 @@ def connection_error(cls, message: str = "connection reset"):
 
 @pytest.fixture
 def schemas():
-    """The three JSON Schemas, loaded once — the contract tests validate against."""
+    """The three JSON Schemas, loaded once — the contract tests validate against.
+
+    Read as package data, so these tests validate against the schemas that
+    actually ship rather than against a copy of them in the checkout.
+    """
     out = {}
     for name in ("queue", "translation-memory", "manifest"):
-        with open(os.path.join(REPO, "app", "schemas", f"{name}.schema.json")) as fh:
+        with open(resources.schema_path(name), encoding="utf-8") as fh:
             out[name] = json.load(fh)
     return out
 

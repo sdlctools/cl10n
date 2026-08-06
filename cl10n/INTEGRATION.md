@@ -1,6 +1,6 @@
 # Integrating `cl10n` into another project
 
-How to vendor this localization pipeline into a repository that is not this one.
+How to add this localization pipeline to a repository that is not this one.
 
 Every command and transcript below was produced by following this document from
 an empty directory into a working Hebrew localization, against the live
@@ -8,70 +8,100 @@ provider. Where something is a caveat rather than a step, it is because it bit
 during that run.
 
 For the day-to-day interface once you are set up, see
-[`USERGUIDE.md`](USERGUIDE.md).
+[`USERGUIDE.md`](USERGUIDE.md). To point the pipeline at an LLM API none of the
+shipped connectors covers, see [`PROVIDERS.md`](PROVIDERS.md).
 
 ______________________________________________________________________
 
-## 1. What you are actually copying
+## 1. Install it
 
-The pipeline is **eight runtime modules plus three engine modules**. It is not
-a package; the modules are bare scripts that put their own directory and `app/`
-on `sys.path`, so copying files is the installation procedure.
-
-| Copy | From | Why |
-| --- | --- | --- |
-| `cl10n/*.py` | `cl10n/` | the runtime: CLI, runner, reassembly, ledger, store |
-| `app/tree_diff.py` | `app/` | change detection: segmentation and Merkle hashing |
-| `app/utils.py` | `app/` | the canonicalisation round-trip every hash is taken over |
-| `app/groq_api.py` | `app/` | provider client and the translation prompt |
-| `requirements.txt` | root | dependencies |
-
-**Do not copy `cl10n/tests/`.** This is the one instruction people get wrong.
-Those tests verify *the pipeline* against *this repository* — its `md/`
-reference corpus, its `app/schemas/` contracts, its
-`.github/workflows/cl10n.yml`. Dropped into a project with different content
-they do not test your integration, they just fail. Running the suite in a fresh
-project after copying only the runtime gives:
-
-```
-8 failed, 110 passed, 36 errors
-```
-
-with the errors resolving to four missing things that belong to the upstream
-repository, not to yours:
-
-| Missing | Errors | What it is |
-| --- | --- | --- |
-| `md/skills/**` | 24 | the upstream reference corpus the tests localize |
-| `.github/workflows/cl10n.yml` | 9 | the workflow contract tests |
-| `app/schemas/*.schema.json` | 6 | JSON Schema contracts — **tests only**, never read at runtime |
-| `pytest.ini` | 1 | sets `asyncio_mode = auto` |
-
-If you want to run the suite, run it in a checkout of the upstream repository,
-which is where it means something. [Section 6](#6-verifying-the-copy) covers how
-to verify *your* copy instead.
-
-Also optional, and safe to delete: `cl10n/build_queue.py` and
-`cl10n/pseudo_tm.py` are development scaffolding, not pipeline components.
-
-______________________________________________________________________
-
-## 2. Copy the pipeline in
+`cl10n` is a package on PyPI. There is nothing to copy.
 
 ```bash
-UPSTREAM=/path/to/markdown-localization
-PROJECT=/path/to/your-project
-
-mkdir -p "$PROJECT"/{cl10n,app,md}
-cp "$UPSTREAM"/cl10n/*.py        "$PROJECT/cl10n/"
-cp "$UPSTREAM"/app/tree_diff.py  "$PROJECT/app/"
-cp "$UPSTREAM"/app/utils.py      "$PROJECT/app/"
-cp "$UPSTREAM"/app/groq_api.py   "$PROJECT/app/"
-cp "$UPSTREAM"/requirements.txt  "$PROJECT/"
+cd /path/to/your-project
+python3 -m venv venv
+venv/bin/pip install "cl10n[groq]"
 ```
 
-If your project already has a `requirements.txt`, merge rather than overwrite —
-and **keep the exact pins**, they are load-bearing:
+That is the whole installation. It brings the pinned parsing stack, the
+runtime, the provider registry and its connectors, and puts a **`cl10n`
+console script** in `venv/bin/`.
+
+Take the extra for the provider you route to — the connectors import their SDK
+lazily, so the extras exist to save you downloading three vendors' clients to
+use one:
+
+| Extra | Installs | For |
+| --- | --- | --- |
+| `cl10n[groq]` | `groq` | the default provider |
+| `cl10n[nvidia]` | `openai` | NVIDIA NIM's OpenAI-compatible endpoint (no OpenAI account) |
+| `cl10n[mistral]` | `mistralai` | Mistral |
+| `cl10n[all-providers]` | all three | when you switch between them, or don't know yet |
+
+Add it to your project's own dependency file so the install is reproducible —
+`requirements.txt`, `pyproject.toml`, whichever you use:
+
+```
+cl10n[groq]
+```
+
+**Pin `cl10n` itself if you pin anything.** The parsing stack inside it is
+pinned exactly, because every unit hash in your translation memory is taken
+over one specific parser configuration; a `cl10n` release that moved those pins
+would move your hashes and re-translate your corpus at full price. Pinning
+`cl10n==X.Y.Z` makes that a decision you take rather than one you receive.
+
+When you *do* take a `cl10n` upgrade, the drift detector is the gate — it ships
+in the wheel and needs no checkout:
+
+```bash
+venv/bin/python3 -m cl10n.compat_check
+```
+
+Green means the new version's parser agrees with the recorded baseline and your
+memory is still valid. Red means the hashes moved: do not upgrade until you
+understand why.
+
+### What you do *not* install
+
+**Not the tests.** `cl10n/tests/` is excluded from the wheel on purpose. Those
+tests verify *the pipeline* against *its own repository* — its `md/` reference
+corpus, its `.github/workflows/cl10n.yml`, a throwaway git repo per test.
+Dropped into a project with different content they would not test your
+integration, they would just fail. [Section 6](#6-verifying-your-setup) is how you
+verify *your* setup instead.
+
+**Not a corpus.** `md/`, `locales/` and `l10n/` in the upstream repository are
+its own content. Yours are yours.
+
+______________________________________________________________________
+
+## 2. Vendoring — the fallback, not the path
+
+Copying the source in still works, and there are two reasons to: an air-gapped
+build with no PyPI access, or a fork whose connectors you are actively editing.
+Neither is the normal case, and both cost you the upgrade path — you now
+maintain a copy.
+
+If you must:
+
+```bash
+UPSTREAM=/path/to/cl10n
+PROJECT=/path/to/your-project
+
+cp -r "$UPSTREAM/cl10n" "$PROJECT/cl10n"
+rm -rf "$PROJECT/cl10n/tests"          # they test the upstream repo, not yours
+```
+
+The whole directory, because since the package layout everything the runtime
+needs lives inside it: `cl10n/core/` (the parser, the segmenter, the prompt),
+`cl10n/providers/` plus `providers.toml`, `cl10n/schemas/`,
+`cl10n/compat-baseline.json` and `cl10n/fixtures/kitchen-sink.md`. Copying
+`cl10n/*.py` takes none of those — it is a glob over files, and every one of
+them is in a subdirectory or is not a `.py`. **Copy the directory, not the
+glob.**
+
+You still need the dependencies, and the parsing stack pins are load-bearing:
 
 ```
 markdown-it-py==4.2.0
@@ -80,38 +110,24 @@ mdformat==1.0.0
 mdformat-gfm==1.0.0
 mdformat-frontmatter==2.1.2
 linkify-it-py==2.1.0
-groq
+groq          # only the provider(s) you route to
 ```
 
-Every unit hash in your translation memory is taken over these five packages in
+Every unit hash in your translation memory is taken over those six packages in
 one specific configuration. A minor upgrade has twice taught markdown-it-py to
 parse a construct mdformat cannot render — task lists, then GitHub alerts —
 and a construct that cannot be rendered cannot be localized. A change that does
 *not* raise is worse: it silently alters the canonical form, every hash moves,
 and your next run re-translates the whole corpus at full price while orphaning
-the memory you already paid for.
+the memory you already paid for. Run `python3 -m cl10n.compat_check` before
+moving any of them.
 
-So also copy `cl10n/compat_check.py`, `cl10n/compat-baseline.json` and
-`cl10n/tests/fixtures/kitchen-sink.md` — the drift detector is the gate for
-ever moving one of those pins:
-
-```bash
-venv/bin/python3 cl10n/compat_check.py
-```
-
-This is the one part of `cl10n/tests/` worth taking with you; the rest tests
-the upstream repository (see [section 1](#1-what-you-are-actually-copying)).
-
-`pytest`, `pytest-asyncio`, `jsonschema` and `pyyaml` are for the upstream test
-suite only — skip them if you are not copying the tests.
+A vendored copy is imported as the package `cl10n` from your project root, so
+`python3 -m cl10n.cli` works but the `cl10n` console script does not exist —
+there is no installed distribution to provide it. Substitute
+`venv/bin/python3 -m cl10n.cli` for `venv/bin/cl10n` everywhere below.
 
 ## 3. Set the project up
-
-```bash
-cd "$PROJECT"
-python3 -m venv venv
-venv/bin/pip install -r requirements.txt
-```
 
 The pipeline assumes `venv/`, not `.venv/`, in its documentation and workflow —
 if you use something else, adjust the interpreter path everywhere.
@@ -122,12 +138,24 @@ Add to `.gitignore`:
 venv/
 __pycache__/
 l10n/queue/          # per-run state, never committed
-groq_creds.txt       # provider key
+*creds*              # provider keys — no extension filter, see below
 ```
 
-Both entries matter. A committed queue file ships transient state and causes
-exactly the merge conflicts the per-language memory files are designed to
+The last two matter most. A committed queue file ships transient state and
+causes exactly the merge conflicts the per-language memory files are designed to
 avoid, and a committed key is a leaked key.
+
+**Use a wide glob for the key files, not one filename per provider.** Each
+provider declares its own creds file in `providers.toml`, and their names do not
+share a separator — `groq_creds.txt`, but `nvidia-nim-creds.txt` and
+`mistral-creds.txt`. A pattern matching only one style leaves the others
+untracked but *unignored*, which is one `git add -A` away from publishing a key.
+
+**And do not filter on `.txt`.** Editing a creds file leaves
+`.mistral-creds.txt.swp` — a vim swap file holding the key in plain text that no
+`*.txt` pattern matches. Both of these were near-misses during development,
+which is why the pattern is just `*creds*`. Verify with
+`git check-ignore -v <file>` rather than assuming.
 
 **Your project must be a git repository.** The pipeline recovers each
 document's previously localized revision through `git cat-file blob`. Without
@@ -153,15 +181,22 @@ Supply the provider key, then run the same four commands you will run for ever
 after. There is no initialization mode — a first localization is an incremental
 update that happens to find everything missing.
 
+The key you need is the one belonging to the provider you will run. With no
+`--provider` flag that is the registry default, `groq`; `cl10n/providers.toml`
+lists every declared provider and the environment variable each expects.
+
 ```bash
 echo 'GROQ_API_KEY="gsk_..."' > groq_creds.txt
+# or, to run NVIDIA instead:
+#   echo 'NVIDIA_NIM_API_KEY="nvapi-..."' > nvidia-nim-creds.txt
+#   ...and add --provider nvidia to the `run` command below
 
-venv/bin/python3 cl10n/cli.py status --langs he    # 0%
-venv/bin/python3 cl10n/cli.py plan   --langs he
-venv/bin/python3 cl10n/cli.py run    --dry-run     # check the bill first
-venv/bin/python3 cl10n/cli.py run    -c 4
-venv/bin/python3 cl10n/cli.py render --langs he
-venv/bin/python3 cl10n/cli.py status --langs he    # 100%
+venv/bin/cl10n status --langs he    # 0%
+venv/bin/cl10n plan   --langs he
+venv/bin/cl10n run    --dry-run     # check the bill first
+venv/bin/cl10n run    -c 4
+venv/bin/cl10n render --langs he
+venv/bin/cl10n status --langs he    # 100%
 ```
 
 A real transcript, from the run that validated this document. The corpus was one
@@ -169,30 +204,30 @@ file containing a heading, two paragraphs, a link, an inline code span and a
 two-column table — seven translation units:
 
 ```
-$ venv/bin/python3 cl10n/cli.py status --langs he
+$ venv/bin/cl10n status --langs he
 1 document(s) under md, 7 translation unit(s)
 
 he: 0/7 units translated (0.0%), 0 fallback(s), 1 document(s) needing a render
    * [not rendered] md/guide.md: 0/7
 
-$ venv/bin/python3 cl10n/cli.py plan --langs he
+$ venv/bin/cl10n plan --langs he
 PLAN 20260804T145625Z-82bded — 1 document(s), 1 language(s)
   TRANSLATE=7  REVISE=0  RECHECK=0  REUSE=0  COPY=0  RETIRE=0
   7 job(s) → l10n/queue/queue.json  {'he': 7}
   0 unit(s) already in the translation memory, 0 flagged for recheck
   render required: yes
 
-$ venv/bin/python3 cl10n/cli.py run -c 4
+$ venv/bin/cl10n run -c 4
 7 jobs — 7 done, 0 rejected, 0 already terminal
 8 API call(s), 0 translation-memory hit(s) in 29.5s
 failures by kind: rate_limit=1
 
-$ venv/bin/python3 cl10n/cli.py render --langs he
+$ venv/bin/cl10n render --langs he
 locales/he/guide.md [he]: 7/7 units translated
 
 1 file(s) rendered across 1 language(s); 0 English fallback(s), 0 placeholder violation(s)
 
-$ venv/bin/python3 cl10n/cli.py status --langs he
+$ venv/bin/cl10n status --langs he
 he: 7/7 units translated (100.0%), 0 fallback(s), 0 document(s) needing a render
      md/guide.md: 7/7
 ```
@@ -212,10 +247,11 @@ One commit, because the manifest asserts that a revision is localized;
 committing it without the locale files it describes leaves the repository
 claiming something the tree does not show.
 
-## 6. Verifying the copy
+## 6. Verifying your setup
 
-Do not reach for the upstream unit tests. The pipeline verifies itself on your
-content in three ways, and all three ran in the transcript above.
+Do not reach for the upstream unit tests — they are not in the wheel, and they
+test the upstream repository. The pipeline verifies itself on your content in
+three ways, and all three ran in the transcript above.
 
 **The renderer verifies its own output.** `render` re-parses every file it
 writes and refuses to write one whose block structure moved. A render that
@@ -247,7 +283,7 @@ for, and it takes thirty seconds to demonstrate on your own corpus:
 ```bash
 sed -i 's/documented separately/documented in the appendix/' md/guide.md
 git commit -qam "edit one sentence"
-venv/bin/python3 cl10n/cli.py plan --langs he
+venv/bin/cl10n plan --langs he
 ```
 
 ```
@@ -263,7 +299,7 @@ and passing the same `--manifest` every time.
 
 ## 7. Automating it with GitHub Actions
 
-Copy `.github/workflows/cl10n.yml` from upstream and change four things:
+Copy `.github/workflows/cl10n.yml` from upstream and change five things:
 
 | Setting | Where | Change to |
 | --- | --- | --- |
@@ -271,9 +307,14 @@ Copy `.github/workflows/cl10n.yml` from upstream and change four things:
 | watched paths | `on.push.paths` | your corpus, e.g. `docs/**` |
 | languages | `env.LANGS` | your language list |
 | corpus root | the `plan` / `render` / `status` steps | add `--md-root docs` if not `md` |
+| **install step** | `Install dependencies` | `venv/bin/pip install "cl10n[groq]"` — upstream installs the checkout it lives in (`.[all-providers]`), which is not what your repository holds |
 
-Add `GROQ_API_KEY` as a repository secret under **Settings → Secrets and
-variables → Actions**.
+Add the key for the provider your workflow runs as a repository secret under
+**Settings → Secrets and variables → Actions** — `GROQ_API_KEY` for the default,
+`NVIDIA_NIM_API_KEY` for NVIDIA. The workflow binds every declared provider's
+secret to the single Execute step; a secret you have not created arrives as an
+empty string and is simply never read, because the runner only consults the
+active provider's variable. **Add only the ones you actually use.**
 
 Leave these three alone unless you know exactly why you are changing them. Each
 fails silently rather than loudly:
@@ -298,10 +339,10 @@ the branch `cl10n/translations` rather than pushing to your default branch.
 Nothing requires `md/` or `locales/`. For a docs site:
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan   --md-root docs --langs fr
-venv/bin/python3 cl10n/cli.py run    -c 8
-venv/bin/python3 cl10n/cli.py render --md-root docs --out-dir i18n --langs fr
-venv/bin/python3 cl10n/cli.py status --md-root docs --out-dir i18n --langs fr
+venv/bin/cl10n plan   --md-root docs --langs fr
+venv/bin/cl10n run    -c 8
+venv/bin/cl10n render --md-root docs --out-dir i18n --langs fr
+venv/bin/cl10n status --md-root docs --out-dir i18n --langs fr
 ```
 
 `docs/sub/intro.md` renders to `i18n/fr/sub/intro.md` — the mirror preserves
@@ -320,8 +361,8 @@ destroys translations silently.
 
 ```bash
 # Correct: one ledger, one memory, two roots.
-venv/bin/python3 cl10n/cli.py render --md-root docs   --out-dir i18n/docs   --langs fr
-venv/bin/python3 cl10n/cli.py render --md-root guides --out-dir i18n/guides --langs fr
+venv/bin/cl10n render --md-root docs   --out-dir i18n/docs   --langs fr
+venv/bin/cl10n render --md-root guides --out-dir i18n/guides --langs fr
 ```
 
 Garbage collection deletes a memory entry when no file **in the ledger it was
@@ -392,9 +433,10 @@ render and you keep it. Forget once and nothing is broken.
 
 Setup:
 
-- [ ] `cl10n/*.py` and the three `app/` modules copied; `cl10n/tests/` **not** copied
-- [ ] dependencies merged into `requirements.txt` and installed into `venv/`
-- [ ] `l10n/queue/` and `groq_creds.txt` in `.gitignore`
+- [ ] `pip install "cl10n[<your provider>]"` into `venv/`, and `venv/bin/cl10n`
+      runs
+- [ ] `cl10n` added (and pinned) in your own dependency file
+- [ ] `l10n/queue/` and a wide `*creds*` glob in `.gitignore`
 - [ ] project is a git repository and the corpus is committed
 
 Verification, in order:
@@ -407,17 +449,21 @@ Verification, in order:
 Shipping:
 
 - [ ] `locales/`, `l10n/tm/` and `l10n/manifest.json` committed together
-- [ ] workflow adapted, `GROQ_API_KEY` secret added, first run triggered manually
+- [ ] workflow adapted, the secret for **your** provider added, first run
+      triggered manually
 
 ## 11. Integration troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `ModuleNotFoundError: tree_diff` | `app/` modules not copied, or `cl10n/` moved away from its sibling `app/` | keep the `cl10n/` + `app/` layout; the path prelude assumes it |
+| `cl10n: command not found` | the package is not installed in the environment you are calling from, or you vendored it (which provides no console script) | `venv/bin/pip install "cl10n[groq]"`, and call `venv/bin/cl10n`; vendored copies use `venv/bin/python3 -m cl10n.cli` |
+| `ModuleNotFoundError: cl10n` | same, seen from a `python -m` invocation | as above |
+| `ModuleNotFoundError: cl10n.core` / `cl10n.providers` | a vendored copy taken with `cp cl10n/*.py` — a file glob takes no subdirectories | copy the whole `cl10n/` directory — see [section 2](#2-vendoring--the-fallback-not-the-path) |
+| `ModuleNotFoundError: groq` (or `openai`, `mistralai`) | the provider SDK is not installed — only `run` needs it, so `plan`/`render`/`status` look healthy first | install the matching extra: `pip install "cl10n[groq]"` |
 | `no source markdown found under md` | corpus is elsewhere | `--md-root <dir>`, on every command |
 | every document plans as new, every run | manifest missing, or a different `--manifest` per command | pass the same path everywhere; check `l10n/manifest.json` exists |
 | everything shows `[not rendered]` | `--out-dir` differs between `render` and `status` | pass the same flags to both |
-| `GROQ_API_KEY is not set` | no env var, and no `groq_creds.txt` in the working directory | export it, or `run --creds-file <path>` |
-| upstream tests fail after copying | they test the upstream repo, not yours | don't copy them — see [section 1](#1-what-you-are-actually-copying) |
-| `pytest` reports `async def functions are not natively supported` | `pytest.ini` with `asyncio_mode = auto` not copied | only relevant if you copied the tests |
+| `<KEY> is not set` | no env var, and no creds file for the **selected** provider, in the working directory | export it, or `run --creds-file <path>`; the name in the message is that provider's `api_key_env` |
+| `unknown provider 'x'` | `--provider` or a `provider:` model prefix names something absent from `providers.toml` | the error lists what is declared |
+| `compat_check` red after a `cl10n` upgrade | the new release moved the parsing stack, so every unit hash moved | pin the previous `cl10n`; do not re-record the baseline to make it pass |
 | GC deleted another root's translations | two corpus roots with **separate** manifests sharing one memory | share **one** manifest across roots — see [section 8](#8-a-different-corpus-layout) |

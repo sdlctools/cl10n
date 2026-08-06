@@ -1,10 +1,12 @@
 # `cl10n` user guide
 
-A practical guide to `cl10n/cli.py`, the command line that drives the whole
+A practical guide to the `cl10n` command, which drives the whole
 continuous-localization pipeline. This is the *how-to*: worked examples, real
 output, and the flows you will actually run. For the *why* behind the design
 decisions, read [`.claude/rules/cl10n-cli-spec.md`](../.claude/rules/cl10n-cli-spec.md);
 for the data contracts, [`.claude/rules/l10n-pipeline-spec.md`](../.claude/rules/l10n-pipeline-spec.md).
+To add a provider the pipeline does not yet speak to, see
+[`PROVIDERS.md`](PROVIDERS.md).
 
 Every command and every block of output below was run against this repository.
 
@@ -60,9 +62,26 @@ ______________________________________________________________________
 
 ## 2. Prerequisites
 
+Install the package. `cl10n` is on PyPI, and the provider SDKs are extras —
+take the one you route to:
+
 ```bash
 python3 -m venv venv
-venv/bin/pip install -r requirements.txt
+venv/bin/pip install "cl10n[groq]"     # or [nvidia], [mistral], [all-providers]
+```
+
+That puts a **`cl10n` console script** in `venv/bin/`, which is what every
+command below uses. The other runnable modules are reached with `python -m`
+(`python3 -m cl10n.compat_check`, `python3 -m cl10n.core.tree_diff`). There
+are no script paths: `venv/bin/python3 cl10n/cli.py …` no longer works, by
+design.
+
+Working *on* this repository rather than with it is the same install pointed
+at the checkout, with the tests and every provider:
+
+```bash
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt   # = -e .[dev]
 ```
 
 The interpreter is `venv/bin/python3` throughout — the virtualenv is `venv/`,
@@ -71,15 +90,63 @@ not `.venv/`.
 A provider key is needed **only by `run`**. `plan`, `render` and `status` never
 touch the network, so you can explore the whole pipeline without one.
 
+Which key depends on which provider you run. Providers are declared in
+[`cl10n/providers.toml`](providers.toml), and each one names the environment
+variable its key comes from plus an optional creds file:
+
+| Provider | Key variable | Default creds file | Selected by |
+| --- | --- | --- | --- |
+| `groq` (default) | `GROQ_API_KEY` | `groq_creds.txt` | nothing — it is the default |
+| `nvidia` | `NVIDIA_NIM_API_KEY` | `nvidia-nim-creds.txt` | `--provider nvidia` |
+| `mistral` | `MISTRAL_API_KEY` | `mistral-creds.txt` | `--provider mistral` |
+
+### Mistral models
+
+All three `-latest` aliases are verified working. Note the model id carries **no
+`mistral/` prefix** — that is the provider's own naming; our routing prefix is a
+colon, and the connector strips it before the call:
+
+```bash
+venv/bin/cl10n run --model mistral:mistral-large-latest
+venv/bin/cl10n run --model mistral:mistral-medium-latest
+venv/bin/cl10n run --provider mistral    # = mistral-large-latest
+```
+
+| Model | Simple prose | A unit with 5 mixed placeholders |
+| --- | --- | --- |
+| `mistral-large-latest` (default) | clean | clean, but needed one corrective retry |
+| `mistral-medium-latest` | clean | clean, one corrective retry — the best value here |
+| `mistral-small-latest` | clean | **unreliable** — 9 placeholder failures in 10 calls, one unit still rejected after 5 attempts |
+
+Measured on a deliberately hostile unit mixing inline code, a relative markdown
+link, `<ANGLE_KEYS>` and `$ARGUMENTS`. The lesson is not the ranking but the
+shape: **placeholder-dense technical prose is what separates these models**, and
+plain paragraphs do not. A rejected unit is not lost work — it renders as
+English and is re-enqueued next run — but a model that rejects often turns
+`--fail-on-fallback` into a permanent red build.
+
+Prefer `medium` or `large` for documentation like this repo's. If you see
+`placeholder_lost` dominating `run`'s failure summary, that is the model, not
+the pipeline — raise `plan --max-attempts` or move up a size.
+
 ```bash
 export GROQ_API_KEY=gsk_...
 # or put it in a file, gitignored, which `run` reads automatically:
 echo 'GROQ_API_KEY="gsk_..."' > groq_creds.txt
+
+# For another provider instead:
+export NVIDIA_NIM_API_KEY=nvapi-...
+export MISTRAL_API_KEY=...
 ```
 
-The default creds file is `groq_creds.txt` in the working directory. Point
-elsewhere with `run --creds-file path/to/file`. An environment variable that is
-already set always wins over the file.
+`run` reads the creds file belonging to whichever provider it resolved, so you
+never have to say which file goes with which key. Point elsewhere with
+`run --creds-file path/to/file`. An environment variable that is already set
+always wins over the file. You only need a key for the provider you actually
+run — an unset key for a provider you are not using is never consulted.
+
+Adding a further provider is a config entry plus a connector module; see
+[`PROVIDERS.md`](PROVIDERS.md).
 
 Run the commands from the repository root — `plan` and `render` locate the repo
 with `git rev-parse --show-toplevel` and record paths relative to it.
@@ -127,13 +194,13 @@ run to read. That degrades safely and costs nothing (the memory still covers
 every unit); what it loses is the `REVISE` upgrade on the following edit. See
 [`INTEGRATION.md` §9](INTEGRATION.md#9-why-committing-matters-precisely).
 
-Now plan, pointing at the repo you cloned this pipeline from:
+Now plan. `cl10n` is installed, so it is just on your path — there is no
+checkout to point at:
 
 ```bash
-CL=/path/to/markdown-localization
-venv=$CL/venv/bin/python3
+pip install "cl10n[groq]"
 
-$venv $CL/cl10n/cli.py plan --langs he
+cl10n plan --langs he
 ```
 
 ```
@@ -148,14 +215,14 @@ Three units: the heading and the two paragraphs. See what it would cost before
 paying:
 
 ```bash
-$venv $CL/cl10n/cli.py run --dry-run
+cl10n run --dry-run
 ```
 
 Then pay for it, and render:
 
 ```bash
-$venv $CL/cl10n/cli.py run --creds-file $CL/groq_creds.txt
-$venv $CL/cl10n/cli.py render --langs he
+cl10n run --creds-file groq_creds.txt
+cl10n render --langs he
 cat locales/he/guide.md
 ```
 
@@ -176,7 +243,7 @@ Now the part that matters. Change **one sentence**:
 ```bash
 sed -i 's/documented separately/documented in the appendix/' md/guide.md
 git commit -qam "edit one sentence"
-$venv $CL/cl10n/cli.py plan --langs he
+cl10n plan --langs he
 ```
 
 ```
@@ -215,9 +282,9 @@ All four subcommands share these:
 Works out what needs translating and writes a queue file.
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs he,ru
-venv/bin/python3 cl10n/cli.py plan --langs he md/skills/guide.md   # one document
-venv/bin/python3 cl10n/cli.py plan --langs he,ru --json            # for scripts
+venv/bin/cl10n plan --langs he,ru
+venv/bin/cl10n plan --langs he md/skills/guide.md   # one document
+venv/bin/cl10n plan --langs he,ru --json            # for scripts
 ```
 
 | Flag | Default | Meaning |
@@ -281,18 +348,20 @@ translation memory supplies the *decision*:
 Executes the queue against the provider. This is the only command that spends
 money and the only one that takes minutes rather than seconds.
 
-`run` is a **verbatim delegation** to `cl10n/queue_runner.py` — every argument
+`run` is a **verbatim delegation** to `cl10n.queue_runner` — every argument
 after `run` is the runner's, not the CLI's. That means the shared flags in the
 table above (`--langs`, `--md-root`, `--manifest`) do **not** apply here, and
 `run --help` answers with the runner's own flags rather than the CLI's, which is
 the accurate help for what you are actually configuring.
 
 ```bash
-venv/bin/python3 cl10n/cli.py run                              # default queue
-venv/bin/python3 cl10n/cli.py run l10n/queue/queue.json -c 8
-venv/bin/python3 cl10n/cli.py run --dry-run                    # no network
-venv/bin/python3 cl10n/cli.py run -c 8 --dry-run               # flags without a path
-venv/bin/python3 cl10n/cli.py run --help                       # the runner's flags
+venv/bin/cl10n run                              # default queue
+venv/bin/cl10n run l10n/queue/queue.json -c 8
+venv/bin/cl10n run --dry-run                    # no network
+venv/bin/cl10n run -c 8 --dry-run               # flags without a path
+venv/bin/cl10n run --provider nvidia            # a different provider
+venv/bin/cl10n run --model nvidia:some/model    # prefix routes too
+venv/bin/cl10n run --help                       # the runner's flags
 ```
 
 The queue path is optional in every position — omit it and the default is used.
@@ -303,10 +372,33 @@ The queue path is optional in every position — omit it and the default is used
 | `--tm-dir` | `l10n/tm` | where translations are written |
 | `-c`, `--concurrency` | `4` | in-flight requests |
 | `--request-timeout` | `120.0` | seconds per request; `0` disables |
-| `--model` | `openai/gpt-oss-120b` | provider model |
+| `--provider` | the registry default (`groq`) | which connector to use |
+| `--model` | the selected provider's `default_model` | model id, optionally `provider:model` |
 | `-n`, `--dry-run` | off | report what would be called, contact nothing |
-| `--creds-file` | `groq_creds.txt` | read `GROQ_API_KEY` from here if unset |
+| `--creds-file` | the provider's `api_key_creds_file` | read its key from here if the env var is unset |
+| `--providers` | `cl10n/providers.toml` | path to the provider registry |
 | `--json` | off | machine-readable output |
+
+#### Choosing a provider
+
+Three ways to say which provider runs, in priority order:
+
+1. **A prefix on `--model`** — `--model nvidia:nvidia/nemotron-3-ultra-550b-a55b`
+   selects the provider *and* the model. The prefix wins over `--provider`.
+2. **`--provider nvidia`** — selects the connector; a bare `--model` is then
+   interpreted as that provider's model, and no `--model` uses its default.
+3. **Neither** — the registry default, `groq`, with its default model. This is
+   exactly the behaviour the pipeline had before providers became pluggable.
+
+The model id is passed to the provider untouched once any prefix is stripped, so
+`--model groq:openai/gpt-oss-120b` and `--model openai/gpt-oss-120b` send the
+same thing.
+
+Translations are **shared across providers**. The translation memory is keyed by
+content hash and prompt version, not by provider, so a unit translated by one
+provider is reused by a run routed to another — switching provider does not
+re-translate the corpus. Only `model` in the entry's provenance records which
+one produced it.
 
 `--dry-run` is the cost estimate:
 
@@ -331,7 +423,9 @@ Concurrency is bounded by your account's rate limit, not by this flag. On a
 free-tier Groq account at 8000 TPM, measured on 30 real units: 232s serially
 versus 156s at `-c 8`. Pushing concurrency higher mostly produces more 429s, and
 an account-wide rate-limit gate parks the whole run when one arrives rather than
-letting every worker retry into the same wall.
+letting every worker retry into the same wall. Those numbers are Groq's tier —
+every provider meters differently, so re-measure rather than assuming `-c 8`
+transfers. The gate itself is provider-independent.
 
 A rejected job is a reportable outcome, not a crash: `run` exits `1`, the queue
 records the failure, and the renderer falls back to English for that unit.
@@ -341,9 +435,9 @@ records the failure, and the renderer falls back to English for that unit.
 Splices the memory into the source tree and writes the locale files.
 
 ```bash
-venv/bin/python3 cl10n/cli.py render --langs he,ru
-venv/bin/python3 cl10n/cli.py render --langs he md/skills/guide.md
-venv/bin/python3 cl10n/cli.py render --langs he,ru --dry-run --report /tmp/r.json
+venv/bin/cl10n render --langs he,ru
+venv/bin/cl10n render --langs he md/skills/guide.md
+venv/bin/cl10n render --langs he,ru --dry-run --report /tmp/r.json
 ```
 
 | Flag | Default | Meaning |
@@ -402,9 +496,9 @@ refused language for ever.
 Read-only coverage report. Writes nothing, needs no key, safe at any time.
 
 ```bash
-venv/bin/python3 cl10n/cli.py status --langs he,ru
-venv/bin/python3 cl10n/cli.py status --langs he,ru --json
-venv/bin/python3 cl10n/cli.py status --langs he --fail-on-incomplete
+venv/bin/cl10n status --langs he,ru
+venv/bin/cl10n status --langs he,ru --json
+venv/bin/cl10n status --langs he --fail-on-incomplete
 ```
 
 | Flag | Default | Meaning |
@@ -498,8 +592,14 @@ locales/<lang>/**.md          rendered translations    committed  (the product)
 l10n/tm/<lang>.json           translation memory       committed  (the real asset)
 l10n/manifest.json            per-document ledger      committed
 l10n/queue/queue.json         one run's state          GITIGNORED
-groq_creds.txt                provider key             GITIGNORED
+cl10n/providers.toml          the provider registry    committed
+*creds*                       provider keys            GITIGNORED
 ```
+
+The creds glob has no separator or extension filter, and both widenings were
+near-misses: `nvidia-nim-creds.txt` while only `*_creds.txt` was ignored, then a
+`.mistral-creds.txt.swp` swap file holding a key in plain text. A key file that
+does not match the ignore pattern is one `git add -A` away from being published.
 
 ### `l10n/tm/<lang>.json` — the translation memory
 
@@ -529,7 +629,7 @@ entry never overwrites a committed one, precisely to protect it.
 `prompt_version` controls whether `plan` and `status` consider an entry usable.
 `render` deliberately does **not** check it: an entry from an older prompt is
 still a real translation and shipping it beats shipping English. This is why
-`cl10n/pseudo_tm.py`, which stamps `prompt_version: "pseudo"`, can render the
+`python -m cl10n.pseudo_tm`, which stamps `prompt_version: "pseudo"`, can render the
 whole corpus while `status` correctly reports 0% translated.
 
 One file per language rather than one file total is a merge-conflict decision:
@@ -588,7 +688,7 @@ localized into Hebrew and Russian is the same three commands with a longer
 `--langs`.
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs he,ru,de
+venv/bin/cl10n plan --langs he,ru,de
 ```
 
 ```
@@ -601,9 +701,9 @@ German is planned from scratch. The diff is identical for all three languages �
 what differs is only which memory has entries.
 
 ```bash
-venv/bin/python3 cl10n/cli.py run -c 8
-venv/bin/python3 cl10n/cli.py render --langs he,ru,de
-venv/bin/python3 cl10n/cli.py status --langs he,ru,de
+venv/bin/cl10n run -c 8
+venv/bin/cl10n render --langs he,ru,de
+venv/bin/cl10n status --langs he,ru,de
 git add locales l10n/tm l10n/manifest.json
 git commit -m "l10n: add German"
 ```
@@ -621,11 +721,11 @@ first and check the call count against your rate limit. If it is large, there is
 no harm in doing it in slices; each slice is a normal resumable run:
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs de md/section-one
-venv/bin/python3 cl10n/cli.py run -c 8
-venv/bin/python3 cl10n/cli.py plan --langs de md/section-two
-venv/bin/python3 cl10n/cli.py run -c 8
-venv/bin/python3 cl10n/cli.py render --langs he,ru,de       # full corpus at the end
+venv/bin/cl10n plan --langs de md/section-one
+venv/bin/cl10n run -c 8
+venv/bin/cl10n plan --langs de md/section-two
+venv/bin/cl10n run -c 8
+venv/bin/cl10n render --langs he,ru,de       # full corpus at the end
 ```
 
 Render the **full corpus** at the end, not per slice — garbage collection only
@@ -647,13 +747,13 @@ $EDITOR md/skills/guide.md
 git commit -am "clarify the rollback section"
 
 # 2. What will this cost?
-venv/bin/python3 cl10n/cli.py plan --langs he,ru
-venv/bin/python3 cl10n/cli.py run --dry-run
+venv/bin/cl10n plan --langs he,ru
+venv/bin/cl10n run --dry-run
 
 # 3. Pay for it, render, check.
-venv/bin/python3 cl10n/cli.py run -c 8
-venv/bin/python3 cl10n/cli.py render --langs he,ru
-venv/bin/python3 cl10n/cli.py status --langs he,ru
+venv/bin/cl10n run -c 8
+venv/bin/cl10n render --langs he,ru
+venv/bin/cl10n status --langs he,ru
 
 # 4. Commit the three outputs together.
 git add locales l10n/tm l10n/manifest.json
@@ -693,16 +793,16 @@ localization against the live provider, so every transcript in it is real.
 **Estimate cost without spending anything**
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs he,ru
-venv/bin/python3 cl10n/cli.py run --dry-run
+venv/bin/cl10n plan --langs he,ru
+venv/bin/cl10n run --dry-run
 ```
 
 **Translate one document only**
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs he md/skills/guide.md
-venv/bin/python3 cl10n/cli.py run
-venv/bin/python3 cl10n/cli.py render --langs he md/skills/guide.md
+venv/bin/cl10n plan --langs he md/skills/guide.md
+venv/bin/cl10n run
+venv/bin/cl10n render --langs he md/skills/guide.md
 ```
 
 Garbage collection is skipped for single-file renders by design.
@@ -710,8 +810,8 @@ Garbage collection is skipped for single-file renders by design.
 **Resume an interrupted run** — just re-run it. Or, if the queue is gone:
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs he,ru    # re-derives what is missing
-venv/bin/python3 cl10n/cli.py run -c 8
+venv/bin/cl10n plan --langs he,ru    # re-derives what is missing
+venv/bin/cl10n run -c 8
 ```
 
 **Recover translations from a crashed CI job.** If a run wrote a memory that was
@@ -720,7 +820,7 @@ planning. Earlier directories win, and a committed entry always beats a restored
 one:
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs he --restore-tm /tmp/salvaged-tm
+venv/bin/cl10n plan --langs he --restore-tm /tmp/salvaged-tm
 ```
 
 ```
@@ -740,7 +840,7 @@ supplies the action; the memory supplies the decision.
 Repeat the flag to stack sources, cheapest and freshest first:
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan --langs he,ru \
+venv/bin/cl10n plan --langs he,ru \
   --restore-tm /tmp/from-pr-branch --restore-tm /tmp/from-artifact
 ```
 
@@ -748,7 +848,7 @@ venv/bin/python3 cl10n/cli.py plan --langs he,ru \
 `review_status` to `approved` so it is recognisably human work, then re-render:
 
 ```bash
-venv/bin/python3 cl10n/cli.py render --langs he
+venv/bin/cl10n render --langs he
 ```
 
 Do not touch `source` or the key — the key is a hash of `source`, and changing
@@ -762,14 +862,14 @@ emptying one is a safe way to queue a redo.
 **Gate CI on completeness**
 
 ```bash
-venv/bin/python3 cl10n/cli.py status --langs he,ru --fail-on-incomplete
-venv/bin/python3 cl10n/cli.py render --langs he,ru --fail-on-fallback
+venv/bin/cl10n status --langs he,ru --fail-on-incomplete
+venv/bin/cl10n render --langs he,ru --fail-on-fallback
 ```
 
 **See what render would do without writing**
 
 ```bash
-venv/bin/python3 cl10n/cli.py render --langs he,ru --dry-run --report /tmp/r.json
+venv/bin/cl10n render --langs he,ru --dry-run --report /tmp/r.json
 ```
 
 `--dry-run` writes nothing at all — no locale files, no manifest, no collection.
@@ -777,11 +877,11 @@ venv/bin/python3 cl10n/cli.py render --langs he,ru --dry-run --report /tmp/r.jso
 **Machine-readable everything**
 
 ```bash
-venv/bin/python3 cl10n/cli.py plan   --langs he --json | jq .jobs
-venv/bin/python3 cl10n/cli.py status --langs he --json | jq .totals.he.missing
-venv/bin/python3 cl10n/cli.py plan   --langs he --report /tmp/plan.json
-venv/bin/python3 cl10n/cli.py render --langs he --report /tmp/render.json
-venv/bin/python3 cl10n/ci_report.py --plan /tmp/plan.json \
+venv/bin/cl10n plan   --langs he --json | jq .jobs
+venv/bin/cl10n status --langs he --json | jq .totals.he.missing
+venv/bin/cl10n plan   --langs he --report /tmp/plan.json
+venv/bin/cl10n render --langs he --report /tmp/render.json
+venv/bin/python3 -m cl10n.ci_report --plan /tmp/plan.json \
   --queue l10n/queue/queue.json --render /tmp/render.json -o /tmp/body.md
 ```
 
@@ -792,7 +892,9 @@ ______________________________________________________________________
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `no source markdown found under md` | wrong `--md-root`, or you are not at the repo root | `cd` to the root or pass `--md-root` |
-| `GROQ_API_KEY is not set` | no env var and no creds file | export it, or `--creds-file` |
+| `<KEY> is not set` (e.g. `GROQ_API_KEY`, `NVIDIA_NIM_API_KEY`) | no env var and no creds file for the **selected** provider | export it, or `--creds-file`; the name in the message is the provider's `api_key_env` |
+| `unknown provider 'x'` | `--provider` or a `provider:` model prefix names something not in `providers.toml` | the message lists what is declared |
+| `module 'groq' has no attribute 'GroqTranslator'` | a connector is being resolved by module name instead of by file path | see [`PROVIDERS.md`](PROVIDERS.md) → the name-collision trap |
 | `status` says 0% but files rendered fine | memory entries carry an older `prompt_version` | expected with `pseudo_tm`; otherwise re-run `plan`/`run` |
 | `plan` finds everything new after a history rewrite | `source_blob` unreachable | harmless — memory turns it back into no-ops |
 | `plan` keeps enqueueing the same unit | its job ends `rejected` every run | look at `error` in the queue file; often a placeholder the model keeps dropping |
@@ -835,13 +937,18 @@ ______________________________________________________________________
 | --- | --- | --- | --- | --- |
 | `0` | planned | all jobs terminal, none rejected | rendered cleanly | reported |
 | `1` | — | one or more jobs `rejected` | violation, structure mismatch, or `--fail-on-fallback` with fallbacks | `--fail-on-incomplete` with missing units |
-| `2` | no source markdown found | no `GROQ_API_KEY` | no source markdown found | no source markdown found |
+| `2` | no source markdown found | the selected provider's key is unset | no source markdown found | no source markdown found |
 
 ### Environment
 
 | Variable | Used by | Notes |
 | --- | --- | --- |
-| `GROQ_API_KEY` | `run` | env wins over `--creds-file` |
+| `GROQ_API_KEY` | `run`, provider `groq` | env wins over the creds file |
+| `NVIDIA_NIM_API_KEY` | `run`, provider `nvidia` | env wins over the creds file |
+| `MISTRAL_API_KEY` | `run`, provider `mistral` | env wins over the creds file |
+
+Only the selected provider's variable is read. The authoritative list is the
+`api_key_env` of each entry in `cl10n/providers.toml`.
 
 ### Defaults
 
@@ -855,9 +962,14 @@ ______________________________________________________________________
 | manifest | `l10n/manifest.json` | `manifest.DEFAULT_MANIFEST` |
 | concurrency | `4` | `queue_runner.DEFAULT_CONCURRENCY` |
 | request timeout | `120.0`s | `queue_runner.DEFAULT_REQUEST_TIMEOUT` |
-| model | `openai/gpt-oss-120b` | `groq_api.DEFAULT_MODEL` |
-| prompt version | `v1` | `groq_api.PROMPT_VERSION` |
+| provider | `groq` | `providers.toml` → `default` |
+| model | `openai/gpt-oss-120b` | `providers.toml` → `[providers.groq] default_model` |
+| prompt version | `v1` | `prompt.PROMPT_VERSION` (`cl10n/core/prompt.py`) |
 | max attempts | `3` | `plan --max-attempts` |
+
+The prompt, its version and the language-name table are **provider-agnostic**
+and live in `cl10n/core/prompt.py`. `cl10n/core/groq_api.py` re-exports them for backward
+compatibility, but new code should import from `prompt`.
 
 ### `plan --report` shape
 
