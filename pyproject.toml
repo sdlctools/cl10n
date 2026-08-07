@@ -82,7 +82,12 @@ mistral = ["mistralai"]
 # SDK's `AsyncAnthropic` client (ANTHROPIC_API_KEY). Like every provider SDK
 # it never touches a hash, so it is unpinned and upgrades freely.
 anthropic_api = ["anthropic"]
-all-providers = ["cl10n[groq,nvidia,mistral,anthropic_api]"]
+# Translate on a Claude Code subscription (CLAUDE_CODE_OAUTH_TOKEN) rather than
+# a metered API key. `claude-agent-sdk` additionally requires the Claude Code
+# CLI to be installed — it spawns it as a subprocess — which pip cannot express
+# and which CI deliberately does not install.
+anthropic_oauth = ["claude-agent-sdk"]
+all-providers = ["cl10n[groq,nvidia,mistral,anthropic_api,anthropic_oauth]"]
 
 # Everything the suite needs on top of a normal install. `cl10n[dev]` plus a
 # checkout is the contributor setup; see AGENTS.md → tests.
