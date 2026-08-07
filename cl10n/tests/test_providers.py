@@ -57,7 +57,9 @@ def _openai_api_timeout():
 def test_the_registry_loads_every_declared_provider():
     r = load_registry()
     assert r.default == "groq"
-    assert set(r.names()) == {"groq", "nvidia", "mistral", "anthropic_oauth"}
+    assert set(r.names()) == {
+        "anthropic_api", "anthropic_oauth", "groq", "mistral", "nvidia",
+    }
 
 
 def test_each_provider_declares_its_key_env_and_default_model_ac2():
@@ -486,6 +488,179 @@ def test_a_prefixed_mistral_model_routes_and_is_stripped(model):
     route = resolve_route(load_registry(), model=f"mistral:{model}")
     assert route.provider == "mistral"
     assert route.model == model  # the prefix never reaches the provider
+
+
+# --------------------------------------------------------------------------
+# Anthropic API connector (its own SDK, an openai-shaped taxonomy but a
+# content-block reply and a required max_tokens — no response_format)
+# --------------------------------------------------------------------------
+#
+# The `anthropic` SDK's exception taxonomy is openai-shaped (a class per
+# status, sharing httpx), so `classify` mirrors groq/nvidia rather than
+# mistral's status_code-branching. The real differences this pins are:
+# the reply is a list of content blocks that must be flattened, there is no
+# `response_format` knob, and `max_tokens` is required.
+
+from cl10n.providers import anthropic_api as anthropic_mod  # noqa: E402
+
+# The classify matrix uses the REAL `anthropic` exception classes — classifying
+# openai exceptions would prove nothing, since the connector's `classify` does
+# `isinstance(exc, anthropic.RateLimitError)` and an openai exception is not
+# one. `anthropic` is an installed extra (`cl10n[anthropic_api]`, pulled into
+# `cl10n[dev]`), so importing it for taxonomy tests is fine; what is tested is
+# no network call and no key, exactly like the openai taxing tests for NVIDIA.
+import anthropic  # noqa: E402
+
+_ANTHROPIC_REQUEST = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+
+def _anthropic_status_error(cls, status, headers=None, message="boom"):
+    """A real `anthropic` status exception — so `classify` is tested, not mocked.
+
+    `APIStatusError.__init__` sets `self.response` and `self.status_code`, the
+    same shape `base._retry_after` reads down — so the shared helper works
+    here (unlike mistral, whose `SDKError` hides the header).
+    """
+    response = httpx.Response(status, headers=headers or {}, request=_ANTHROPIC_REQUEST)
+    return cls(message, response=response, body=None)
+
+
+def _anthropic_api_timeout():
+    """`APITimeoutError` takes only a request (no message kw) — build inline."""
+    return anthropic.APITimeoutError(request=_ANTHROPIC_REQUEST)
+
+
+def _anthropic_connection_error(message="connection reset"):
+    """`APIConnectionError` takes a message + request (keyword-only message)."""
+    return anthropic.APIConnectionError(message=message, request=_ANTHROPIC_REQUEST)
+
+
+@pytest.mark.parametrize("exc,kind,retryable", [
+    (_anthropic_status_error(anthropic.RateLimitError, 429), "rate_limit", True),
+    (_anthropic_status_error(anthropic.InternalServerError, 500), "api_error", True),
+    (_anthropic_status_error(anthropic.InternalServerError, 503), "api_error", True),
+    (_anthropic_status_error(anthropic.AuthenticationError, 401), "api_error", False),
+    (_anthropic_status_error(anthropic.PermissionDeniedError, 403), "api_error", False),
+    (_anthropic_status_error(anthropic.BadRequestError, 400), "api_error", False),
+    (_anthropic_status_error(anthropic.NotFoundError, 404), "api_error", False),
+    (_anthropic_status_error(anthropic.UnprocessableEntityError, 422), "api_error", False),
+    (_anthropic_status_error(anthropic.ConflictError, 409), "api_error", True),
+    (_anthropic_connection_error(), "network", True),
+    (_anthropic_api_timeout(), "network", True),
+    (asyncio.TimeoutError(), "network", True),
+    (ConnectionResetError("reset by peer"), "network", True),
+    (ValueError("bug in our own code"), "api_error", False),
+])
+def test_anthropic_api_classify(exc, kind, retryable):
+    failure = anthropic_mod.classify(exc)
+    assert failure.kind == kind
+    assert failure.retryable is retryable
+
+
+def test_anthropic_api_classify_reads_retry_after_from_response_headers():
+    """`base._retry_after` reads `exc.response.headers` and works for anthropic.
+
+    Unlike mistral's `SDKError`, `APIStatusError` exposes `.response`, so the
+    shared helper finds the `Retry-After` header without a connector-local
+    override — this asserts that the shared path is the one in use.
+    """
+    exc = _anthropic_status_error(
+        anthropic.RateLimitError, 429, headers={"retry-after": "12.5"},
+    )
+    assert _base_retry_after(exc) == 12.5
+    assert anthropic_mod.classify(exc).retry_after == 12.5
+
+
+def test_anthropic_api_classify_ignores_http_date_retry_after():
+    exc = _anthropic_status_error(
+        anthropic.RateLimitError, 429,
+        headers={"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"},
+    )
+    assert anthropic_mod.classify(exc).retry_after is None
+
+
+def test_anthropic_api_translator_is_constructible_without_an_api_key(monkeypatch):
+    """The connector is importable/constructible with no key (AC2, AC6).
+
+    The client is lazy — `_client is None` after construction — so the module
+    stays importable without `ANTHROPIC_API_KEY`, which is what keeps the seam
+    stubbable and lets `cl10n[dev]`'s test suite run with no Anthropic key.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    r = load_registry()
+    cfg = r.get("anthropic_api")
+    tr = build_translator(cfg, anthropic_mod.DEFAULT_MODEL)
+    assert tr.model == anthropic_mod.DEFAULT_MODEL
+    assert tr._client is None  # nothing built yet — no key needed
+
+
+def test_anthropic_api_translator_unwraps_the_envelope_and_sends_max_tokens():
+    """Anthropic returns a list of content blocks; the connector flattens and
+    unwraps.
+
+    No `response_format` is sent (the Messages API has no JSON-mode knob); the
+    shared prompt plus the tolerant `extract_translation` carry it. `max_tokens`
+    is required by `messages.create`, so it is always present in the call.
+    """
+    sent = {}
+
+    class FakeMessages:
+        async def create(self, **kwargs):
+            sent.update(kwargs)
+            # The reply is `message.content`, a LIST of content blocks, not
+            # `choices[0].message.content`. A model returning a JSON object
+            # arrives as a single text block holding the envelope string.
+            block = type("Block", (), {
+                "type": "text",
+                "text": '{"translation": "{a: 1} תחביר"}',
+            })()
+            return type("Message", (), {"content": [block]})()
+
+    client = type("Client", (), {
+        "messages": FakeMessages()
+    })()
+
+    r = load_registry()
+    cfg = r.get("anthropic_api")
+    tr = build_translator(cfg, "claude-haiku-4-5-20251001")
+    tr._client = client
+    assert asyncio.run(tr.translate("prompt")) == "{a: 1} תחביר"
+    # No response_format — the Messages API has no JSON-mode knob.
+    assert "response_format" not in sent
+    # max_tokens is required by the SDK, so it is always sent.
+    assert sent["max_tokens"] == 4096
+    assert sent["model"] == "claude-haiku-4-5-20251001"
+    assert sent["temperature"] == 0.1
+
+
+def test_anthropic_api_flattens_a_multi_block_content_reply():
+    """A reply may span several text blocks. Concatenate the text ones; any
+    non-text block (a tool-use or thinking block) contributes nothing.
+
+    Handing the block list straight to `extract_translation` would store a
+    Python repr in the translation memory — exactly the mistake `mistral.py`
+    documents, which is why both flatten.
+    """
+    first = '{"translation": "שלו'
+    last = 'ם"}'
+    blocks = [
+        type("Block", (), {"type": "text", "text": first})(),
+        type("Block", (), {"type": "thinking", "text": "reasoning here"})(),
+        type("Block", (), {"type": "text", "text": last})(),
+    ]
+    assert anthropic_mod._flatten(blocks) == '{"translation": "שלום"}'
+    assert anthropic_mod._flatten("plain string") == "plain string"
+    assert anthropic_mod._flatten(None) == ""
+
+
+def test_anthropic_api_classify_uses_the_installed_sdk():
+    """`classify` isolates the resolved provider's own taxonomy. Anthropic's
+    `classify` is its own function in its own module, not groq's or openai's.
+    """
+    r = load_registry()
+    ac = get_classify(r.get("anthropic_api"))
+    assert ac is anthropic_mod.classify
+    assert ac.__module__.endswith("anthropic_api")
 
 
 # --------------------------------------------------------------------------

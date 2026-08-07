@@ -376,6 +376,8 @@ ______________________________________________________________________
           PROVIDER: ${{ github.event.inputs.provider || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ACME_API_KEY: ${{ secrets.ACME_API_KEY }}      # <- add yours here
 ```
@@ -442,9 +444,9 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 10. Worked example: the three shipped connectors
+## 10. Worked example: the five shipped connectors
 
-The fastest way to write the fourth is to read the three that exist, in this
+The fastest way to write the sixth is to read the ones that exist, in this
 order — they are deliberately different from each other:
 
 | Connector | SDK | What it demonstrates |
@@ -452,15 +454,18 @@ order — they are deliberately different from each other:
 | `groq.py` | `groq` | the baseline: per-status exception classes, `response_format` JSON mode, a lazy client |
 | `nvidia.py` | `openai` | an OpenAI-compatible endpoint via `base_url`; **no** `response_format`, because not every NIM model accepts JSON mode |
 | `mistral.py` | `mistralai` | a native SDK that resembles neither: one `SDKError`, `Retry-After` in a non-standard place, httpx errors escaping, and a `content` union |
+| `anthropic_api.py` | `anthropic` | a native SDK with the openai exception shape but a **content-block, not choices** reply that must be flattened, **no** `response_format`, and a **required** `max_tokens` — read the installed SDK, do not assume it looks like groq's |
 | `anthropic_oauth.py` | `claude_agent_sdk` | **the transport is a CLI subprocess, not an HTTP client** — `query()` spawns the Claude Code CLI. No `base_url`, no `api_key=`, no response object. Copy this one for any future non-HTTP provider |
 
 `mistral.py` is the one to copy if your provider has its own SDK; `nvidia.py` if
-it is OpenAI-compatible; `anthropic_oauth.py` if it is not an HTTP API at all.
+it is OpenAI-compatible; `anthropic_api.py` if it is OpenAI-shaped but returns
+content blocks rather than a single string; `anthropic_oauth.py` if it is not
+an HTTP API at all.
 
 ### What the non-HTTP one has to solve that the others don't
 
 Worth reading even if your provider *is* an HTTP API, because each of these is
-a class of problem the first three connectors never meet:
+a class of problem the first four connectors never meet:
 
 - **The reply is a stream of message objects, not a completion.** `query()` is
   an async generator; the connector aggregates the `TextBlock`s into one string
