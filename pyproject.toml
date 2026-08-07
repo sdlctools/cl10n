@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cl10n"
-version = "0.1.2-dev.1"
+version = "0.1.3"
 description = "Continuous localization for Markdown corpora — AST-level change detection, a translation memory, and pluggable LLM providers"
 readme = "README.md"
 license = "MIT"
