@@ -50,3 +50,32 @@ connector           = "mistral:MistralTranslator"
 default_model        = "mistral-large-latest"
 api_key_env         = "MISTRAL_API_KEY"
 api_key_creds_file  = "mistral-creds.txt"
+
+# Anthropic API — the metered Messages API at platform.claude.com via the
+# `anthropic` SDK's `AsyncAnthropic` client, keyed with an ANTHROPIC_API_KEY.
+# The OAuth-flow connector (anthropic_oauth, CLAUDE_CODE_OAUTH_TOKEN) is a
+# separate sub-task; this one is the straightforward of the two and lands
+# first. No base_url: the SDK default (https://api.anthropic.com) is correct.
+[providers.anthropic_api]
+connector           = "anthropic_api:AnthropicApiTranslator"
+default_model        = "claude-sonnet-5"
+api_key_env         = "ANTHROPIC_API_KEY"
+api_key_creds_file  = "anthropic-api-creds.txt"
+
+# Anthropic via a Claude Code subscription — the one connector whose transport
+# is a CLI SUBPROCESS rather than an HTTP client (claude_agent_sdk spawns the
+# Claude Code CLI). No base_url, and there is no endpoint to point one at.
+#
+# `api_key_env` here names an OAuth **token**, not an API key — that is
+# correct and deliberate, not an oversight to "fix": the field is the registry's
+# generic "which environment variable holds the credential", and
+# `load_creds_file` reads whatever name it is given. The token comes from
+# `claude setup-token`.
+#
+# Requires the Claude Code CLI on PATH, which is why this is a local/developer
+# route: CI does not install it (see .github/workflows/cl10n.yml).
+[providers.anthropic_oauth]
+connector           = "anthropic_oauth:AnthropicOauthTranslator"
+default_model        = "claude-sonnet-5"
+api_key_env         = "CLAUDE_CODE_OAUTH_TOKEN"
+api_key_creds_file  = "anthropic-oauth-creds.txt"

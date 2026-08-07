@@ -203,6 +203,24 @@ jobs:
         # runner reads only the active connector's `api_key_env`, so the unused
         # key is bound but never read or printed. Adding a third provider's
         # secret here is the only change a new provider needs in this file.
+        #
+        # ANTHROPIC_OAUTH IS NOT A CI ROUTE, AND THAT IS DELIBERATE.
+        # Its token is bound below like every other declared provider's (a
+        # test asserts every provider in providers.toml is wired here), but
+        # CI keeps routing to Groq and this one is a local/developer route.
+        #
+        # Note what does NOT stop it: the connector translates by spawning the
+        # **Claude Code CLI** as a subprocess, and on this runner the CLI is
+        # actually present — `claude-agent-sdk`'s manylinux x86_64 wheel bundles
+        # the binary, so `pip install ".[all-providers]"` above already brings
+        # it. Do not "fix" this comment into claiming CI cannot run it; on a
+        # platform with no bundled wheel it genuinely cannot, and there the
+        # failure is a terminal CLI-not-found.
+        #
+        # The reason to keep CI off it is billing, not capability: this route
+        # spends a Claude Code SUBSCRIPTION's usage limits, and an unattended
+        # hundreds-of-units run is what those limits are least suited to.
+        # Routing CI here is a deliberate decision — see cl10n/PROVIDERS.md §8.
         id: run
         if: steps.plan.outputs.jobs != '0'
         continue-on-error: true
@@ -213,6 +231,8 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           args=(venv/bin/cl10n run "$QUEUE" -c 8)
           [ -n "$PROVIDER" ] && args+=(--provider "$PROVIDER")
