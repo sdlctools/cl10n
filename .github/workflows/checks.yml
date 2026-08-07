@@ -127,7 +127,7 @@ jobs:
 
           registry = load_registry()
           assert registry.default == "groq", registry.default
-          assert set(registry.names()) == {"groq", "mistral", "nvidia"}, registry.names()
+          assert set(registry.names()) == {"groq", "mistral", "nvidia", "anthropic_api", "anthropic_oauth"}, registry.names()
 
           translator = build_translator(registry.get("groq"), "x/y")
           assert type(translator).__module__ == "cl10n.providers.groq"
