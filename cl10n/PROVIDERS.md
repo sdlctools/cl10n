@@ -376,6 +376,8 @@ ______________________________________________________________________
           PROVIDER: ${{ github.event.inputs.provider || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ACME_API_KEY: ${{ secrets.ACME_API_KEY }}      # <- add yours here
 ```
 
@@ -412,9 +414,9 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 10. Worked example: the three shipped connectors
+## 10. Worked example: the four shipped connectors
 
-The fastest way to write the fourth is to read the three that exist, in this
+The fastest way to write the fifth is to read the ones that exist, in this
 order — they are deliberately different from each other:
 
 | Connector | SDK | What it demonstrates |
@@ -422,6 +424,8 @@ order — they are deliberately different from each other:
 | `groq.py` | `groq` | the baseline: per-status exception classes, `response_format` JSON mode, a lazy client |
 | `nvidia.py` | `openai` | an OpenAI-compatible endpoint via `base_url`; **no** `response_format`, because not every NIM model accepts JSON mode |
 | `mistral.py` | `mistralai` | a native SDK that resembles neither: one `SDKError`, `Retry-After` in a non-standard place, httpx errors escaping, and a `content` union |
+| `anthropic_api.py` | `anthropic` | a native SDK with the openai exception shape but a **content-block, not choices** reply that must be flattened, **no** `response_format`, and a **required** `max_tokens` — read the installed SDK, do not assume it looks like groq's |
 
 `mistral.py` is the one to copy if your provider has its own SDK; `nvidia.py` if
-it is OpenAI-compatible.
+it is OpenAI-compatible; `anthropic_api.py` if it is OpenAI-shaped but returns
+content blocks rather than a single string.

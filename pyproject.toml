@@ -78,7 +78,11 @@ nvidia = ["openai"]
 # Mistral ships its own SDK. Note 2.x moved the client to `mistralai.client`:
 # `from mistralai import Mistral` fails.
 mistral = ["mistralai"]
-all-providers = ["cl10n[groq,nvidia,mistral]"]
+# The Anthropic API connector: the metered Messages API via the `anthropic`
+# SDK's `AsyncAnthropic` client (ANTHROPIC_API_KEY). Like every provider SDK
+# it never touches a hash, so it is unpinned and upgrades freely.
+anthropic_api = ["anthropic"]
+all-providers = ["cl10n[groq,nvidia,mistral,anthropic_api]"]
 
 # Everything the suite needs on top of a normal install. `cl10n[dev]` plus a
 # checkout is the contributor setup; see AGENTS.md → tests.

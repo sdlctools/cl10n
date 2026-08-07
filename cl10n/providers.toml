@@ -50,3 +50,14 @@ connector           = "mistral:MistralTranslator"
 default_model        = "mistral-large-latest"
 api_key_env         = "MISTRAL_API_KEY"
 api_key_creds_file  = "mistral-creds.txt"
+
+# Anthropic API — the metered Messages API at platform.claude.com via the
+# `anthropic` SDK's `AsyncAnthropic` client, keyed with an ANTHROPIC_API_KEY.
+# The OAuth-flow connector (anthropic_oauth, CLAUDE_CODE_OAUTH_TOKEN) is a
+# separate sub-task; this one is the straightforward of the two and lands
+# first. No base_url: the SDK default (https://api.anthropic.com) is correct.
+[providers.anthropic_api]
+connector           = "anthropic_api:AnthropicApiTranslator"
+default_model        = "claude-sonnet-5"
+api_key_env         = "ANTHROPIC_API_KEY"
+api_key_creds_file  = "anthropic-api-creds.txt"
