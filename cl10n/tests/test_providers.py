@@ -57,7 +57,7 @@ def _openai_api_timeout():
 def test_the_registry_loads_every_declared_provider():
     r = load_registry()
     assert r.default == "groq"
-    assert set(r.names()) == {"groq", "nvidia", "mistral"}
+    assert set(r.names()) == {"groq", "nvidia", "mistral", "anthropic_oauth"}
 
 
 def test_each_provider_declares_its_key_env_and_default_model_ac2():
@@ -80,6 +80,16 @@ def test_each_provider_declares_its_key_env_and_default_model_ac2():
     assert mistral.api_key_creds_file == "mistral-creds.txt"
     assert mistral.base_url is None  # the mistralai SDK targets its own host
     assert mistral.default_model  # non-empty
+
+    oauth = r.get("anthropic_oauth")
+    assert oauth.connector == "anthropic_oauth:AnthropicOauthTranslator"
+    # Deliberately a TOKEN, not an API key: the registry field is generic and
+    # `load_creds_file` reads whatever name it is given.
+    assert oauth.api_key_env == "CLAUDE_CODE_OAUTH_TOKEN"
+    assert oauth.api_key_creds_file == "anthropic-oauth-creds.txt"
+    # There is no endpoint at all — the transport is a CLI subprocess.
+    assert oauth.base_url is None
+    assert oauth.default_model  # non-empty
 
 
 def test_a_third_provider_is_a_config_change_plus_a_connector_module_ac2(tmp_path):
@@ -476,3 +486,385 @@ def test_a_prefixed_mistral_model_routes_and_is_stripped(model):
     route = resolve_route(load_registry(), model=f"mistral:{model}")
     assert route.provider == "mistral"
     assert route.model == model  # the prefix never reaches the provider
+
+
+# --------------------------------------------------------------------------
+# anthropic_oauth connector — the CLI-subprocess transport (CLN-8)
+# --------------------------------------------------------------------------
+#
+# The first connector that is not an HTTP client at all: `claude_agent_sdk`
+# spawns the Claude Code CLI as a subprocess and streams messages back. So the
+# stub here is not a fake client object but a fake `query()` — an async
+# generator yielding message objects.
+#
+# THE BAR (AC9): no test may require a token, spawn the CLI, or make a network
+# call. Every test below either injects that generator or exercises `classify`
+# on constructed exceptions.
+
+from cl10n.providers import anthropic_oauth as oauth_mod  # noqa: E402
+
+claude_agent_sdk = pytest.importorskip(
+    "claude_agent_sdk",
+    reason="the anthropic_oauth extra is not installed",
+)
+
+
+def _text_message(*texts: str):
+    """An `AssistantMessage` carrying `TextBlock`s, as the SDK yields them."""
+    return claude_agent_sdk.AssistantMessage(
+        content=[claude_agent_sdk.TextBlock(text=t) for t in texts],
+        model="claude-sonnet-5",
+    )
+
+
+def _fake_query(messages, sent=None):
+    """A stand-in for `claude_agent_sdk.query` — an async generator.
+
+    Records the kwargs it was called with (so the turn constraints can be
+    asserted) and yields the scripted messages. Nothing is spawned.
+    """
+
+    async def query(**kwargs):
+        if sent is not None:
+            sent.update(kwargs)
+        for message in messages:
+            yield message
+
+    return query
+
+
+def _translator(messages, sent=None, model="claude-sonnet-5"):
+    """A registry-built translator with the fake `query` injected."""
+    tr = build_translator(load_registry().get("anthropic_oauth"), model)
+    tr._client = _fake_query(messages, sent)
+    return tr
+
+
+# --- AC2: constructible and importable with nothing available ---------------
+
+
+def test_anthropic_oauth_translator_is_constructible_without_a_token(monkeypatch):
+    """Constructing spawns no subprocess, imports no SDK and needs no token."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    r = load_registry()
+    tr = build_translator(r.get("anthropic_oauth"), oauth_mod.DEFAULT_MODEL)
+    assert tr.model == oauth_mod.DEFAULT_MODEL
+    assert tr._client is None  # nothing built yet — no token needed
+    assert tr.api_key_env == "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def test_the_module_imports_and_constructs_with_the_sdk_absent(monkeypatch):
+    """The SDK is an optional extra, so the connector must import without it.
+
+    A Groq run — and the whole test suite on a machine that never installed
+    `claude-agent-sdk` — imports this module. Asserted by importing it in a
+    *subprocess* whose import machinery refuses the SDK: reloading it in-process
+    would rebind `StreamError`/`ApiKeyShadowError` to fresh class objects and
+    silently break every `isinstance` check in the tests that follow.
+
+    Only `_load_sdk()` may raise, and only when actually called.
+    """
+    import subprocess
+    import textwrap
+
+    program = textwrap.dedent(
+        """
+        import sys
+        sys.modules["claude_agent_sdk"] = None   # any import of it now raises
+
+        from cl10n.providers import anthropic_oauth as m
+
+        tr = m.AnthropicOauthTranslator(model="m")
+        assert tr.model == "m"
+        assert tr._client is None, "constructing must not build anything"
+
+        try:
+            m._load_sdk()
+        except ImportError:
+            pass
+        else:
+            raise AssertionError("_load_sdk must raise when the SDK is absent")
+
+        # classify still answers without the SDK, delegating to base.classify.
+        assert m.classify(ValueError("bug")).kind == "api_error"
+        print("OK")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True, text=True,
+        env={**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": "", "ANTHROPIC_API_KEY": ""},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout
+
+
+# --- AC3: TextBlocks aggregate, through extract_translation -----------------
+
+
+def test_the_assistant_text_blocks_aggregate_into_one_translation():
+    """`query()` yields messages; `translate` returns one finished string.
+
+    Several `TextBlock`s across several `AssistantMessage`s are concatenated,
+    and the result goes through the shared `extract_translation`, so the JSON
+    envelope never reaches the translation memory.
+    """
+    sent = {}
+    tr = _translator(
+        [
+            _text_message('{"translation": "{a: 1} תח'),
+            _text_message('ביר"}'),
+        ],
+        sent,
+    )
+    assert asyncio.run(tr.translate("prompt")) == "{a: 1} תחביר"
+    assert sent["prompt"] == "prompt"
+
+
+def test_the_turn_is_constrained_so_the_model_answers_rather_than_agents():
+    """No tools and a single turn — this is a translation, not an agent loop."""
+    sent = {}
+    tr = _translator([_text_message('{"translation": "שלום"}')], sent, model="claude-x")
+    assert asyncio.run(tr.translate("prompt")) == "שלום"
+    options = sent["options"]
+    assert options.allowed_tools == []
+    assert options.max_turns == 1
+    assert options.model == "claude-x"
+
+
+def test_non_text_messages_are_ignored():
+    """Result/system frames carry no translation and must not corrupt one."""
+    tr = _translator([
+        claude_agent_sdk.SystemMessage(subtype="init", data={}),
+        _text_message('{"translation": "שלום"}'),
+        claude_agent_sdk.ResultMessage(
+            subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+            num_turns=1, session_id="s",
+        ),
+    ])
+    assert asyncio.run(tr.translate("prompt")) == "שלום"
+
+
+# --- AC5: the ANTHROPIC_API_KEY shadowing guard -----------------------------
+
+
+def test_a_shadowing_anthropic_api_key_stops_the_run(monkeypatch):
+    """With ANTHROPIC_API_KEY set, an OAuth translate must NOT silently proceed.
+
+    The CLI would bill the metered API instead of the subscription. The trap is
+    local and real: `anthropic-api-creds.txt` exists in this repo for the
+    sibling provider and `load_creds_file` uses `os.environ.setdefault`, so a
+    key exported in an earlier shell survives into an OAuth run.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leftover")
+    called = False
+
+    async def query(**kwargs):  # pragma: no cover — must never run
+        nonlocal called
+        called = True
+        yield _text_message("nope")
+
+    tr = build_translator(load_registry().get("anthropic_oauth"), "claude-sonnet-5")
+    tr._client = query
+    with pytest.raises(oauth_mod.ApiKeyShadowError):
+        asyncio.run(tr.translate("prompt"))
+    assert not called, "the guard must fire before the CLI is ever invoked"
+
+
+def test_the_shadowing_guard_is_terminal_not_retryable(monkeypatch):
+    """Retrying cannot unset an environment variable."""
+    failure = oauth_mod.classify(oauth_mod.ApiKeyShadowError("ANTHROPIC_API_KEY is set"))
+    assert failure.kind == "api_error"
+    assert failure.retryable is False
+
+
+def test_translate_proceeds_when_no_api_key_shadows_it(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    tr = _translator([_text_message('{"translation": "שלום"}')])
+    assert asyncio.run(tr.translate("prompt")) == "שלום"
+
+
+# --- AC4: classify, one case per row of the kinds table ---------------------
+
+
+def _cli_not_found():
+    return claude_agent_sdk.CLINotFoundError("Claude Code not found")
+
+
+def _rate_limit_event(status="rejected", resets_at=None, kind="five_hour"):
+    info = claude_agent_sdk.RateLimitInfo(
+        status=status, resets_at=resets_at, rate_limit_type=kind,
+    )
+    return claude_agent_sdk.RateLimitEvent(
+        rate_limit_info=info, uuid="u", session_id="s",
+    )
+
+
+@pytest.mark.parametrize("exc,kind,retryable", [
+    # subscription / usage limit → rate_limit, retryable (the gate needs this)
+    (oauth_mod.StreamError("rate_limit", "usage limit"), "rate_limit", True),
+    (oauth_mod.StreamError("billing_error", "billing"), "rate_limit", True),
+    # process / transport failure mid-stream → network, retryable
+    (claude_agent_sdk.ProcessError("died", exit_code=1), "network", True),
+    (claude_agent_sdk.CLIConnectionError("pipe broke"), "network", True),
+    (claude_agent_sdk.CLIJSONDecodeError("{bad", ValueError("x")), "network", True),
+    # the SDK strips the type when re-raising a mid-stream failure
+    (Exception("Claude Code process exited with code 1"), "network", True),
+    # CLI-not-found and auth failure → api_error, TERMINAL
+    (_cli_not_found(), "api_error", False),
+    (oauth_mod.StreamError("authentication_failed", "bad token"), "api_error", False),
+    (oauth_mod.ApiKeyShadowError("shadowed"), "api_error", False),
+    # unrecognised → delegated to base.classify (terminal), except the shapes
+    # base itself calls retryable
+    (ValueError("bug in our own code"), "api_error", False),
+    (asyncio.TimeoutError(), "network", True),
+    (ConnectionResetError("reset by peer"), "network", True),
+])
+def test_anthropic_oauth_classify(exc, kind, retryable):
+    failure = oauth_mod.classify(exc)
+    assert failure.kind == kind
+    assert failure.retryable is retryable
+
+
+def test_cli_not_found_beats_the_connection_error_branch():
+    """`CLINotFoundError` IS a `CLIConnectionError` — the specific must win.
+
+    Reversed, a missing CLI is classified retryable and the runner fails three
+    times slower to reach the same answer. The message must name the remedy.
+    """
+    assert issubclass(claude_agent_sdk.CLINotFoundError,
+                      claude_agent_sdk.CLIConnectionError), "precondition"
+    failure = oauth_mod.classify(_cli_not_found())
+    assert failure.kind == "api_error"
+    assert failure.retryable is False
+    assert "install" in failure.detail.lower()
+
+
+def test_only_a_bare_exception_is_treated_as_a_broken_stream():
+    """An exact-type match, so a real bug stays terminal.
+
+    A bare `Exception` is how the SDK re-raises a mid-stream transport failure
+    (the typed class is lost through the message channel). A *subclass* is an
+    unrecognised error — usually a bug in the connector — and retrying a bug
+    only bills for it three times.
+    """
+    class MyBug(Exception):
+        pass
+
+    assert oauth_mod.classify(Exception("stream died")).retryable is True
+    assert oauth_mod.classify(MyBug("bug")).retryable is False
+    assert oauth_mod.classify(MyBug("bug")).kind == "api_error"
+
+
+# --- rate limits arrive in the stream, not as a status code -----------------
+
+
+def test_a_rejected_rate_limit_event_becomes_a_retryable_failure():
+    """The usage limit is *yielded*; it must reach `classify` as an exception.
+
+    Otherwise the runner's account-wide RateLimitGate never sees it and every
+    worker walks into the same wall privately.
+    """
+    tr = _translator([_rate_limit_event(status="rejected")])
+    with pytest.raises(oauth_mod.StreamError) as caught:
+        asyncio.run(tr.translate("prompt"))
+    failure = oauth_mod.classify(caught.value)
+    assert failure.kind == "rate_limit"
+    assert failure.retryable is True
+
+
+def test_an_allowed_rate_limit_event_does_not_interrupt_the_translation():
+    """`allowed` / `allowed_warning` are telemetry, not failures."""
+    tr = _translator([
+        _rate_limit_event(status="allowed_warning"),
+        _text_message('{"translation": "שלום"}'),
+    ])
+    assert asyncio.run(tr.translate("prompt")) == "שלום"
+
+
+def test_resets_at_becomes_seconds_from_now_and_never_a_stale_wait():
+    """`resets_at` is a Unix timestamp, not a duration.
+
+    The runner floors its backoff with whatever we return, so a past reset
+    must degrade to None (use our own backoff) rather than a negative wait.
+    """
+    import time as _time
+
+    assert oauth_mod._resets_in(None) is None
+    assert oauth_mod._resets_in(_time.time() - 60) is None  # already passed
+    assert oauth_mod._resets_in("not a number") is None
+    soon = oauth_mod._resets_in(_time.time() + 30)
+    assert soon is not None and 0 < soon <= 30
+
+
+def test_a_rejected_rate_limit_event_carries_the_reset_wait():
+    import time as _time
+
+    tr = _translator([_rate_limit_event(status="rejected", resets_at=int(_time.time() + 45))])
+    with pytest.raises(oauth_mod.StreamError) as caught:
+        asyncio.run(tr.translate("prompt"))
+    failure = oauth_mod.classify(caught.value)
+    assert failure.retry_after is not None and 0 < failure.retry_after <= 45
+
+
+def test_an_assistant_message_error_becomes_a_typed_failure():
+    """`AssistantMessage.error` is an in-stream signal, not an exception."""
+    message = claude_agent_sdk.AssistantMessage(
+        content=[], model="claude-sonnet-5", error="authentication_failed",
+    )
+    tr = _translator([message])
+    with pytest.raises(oauth_mod.StreamError) as caught:
+        asyncio.run(tr.translate("prompt"))
+    failure = oauth_mod.classify(caught.value)
+    assert failure.kind == "api_error"
+    assert failure.retryable is False, "a bad token is never worth retrying"
+
+
+# --- the subprocess concurrency ceiling lives in the connector --------------
+
+
+def test_the_subprocess_ceiling_is_enforced_inside_the_connector():
+    """`-c 8` here means eight Node processes, so the connector caps itself.
+
+    Expressed here rather than in the runner: spec §7 invariant 2 — the runner
+    must never learn a provider's name, and there is no `--provider`-specific
+    CLI flag.
+    """
+    assert oauth_mod.MAX_CONCURRENCY <= 8
+
+    live = 0
+    peak = 0
+
+    async def query(**kwargs):
+        nonlocal live, peak
+        live += 1
+        peak = max(peak, live)
+        try:
+            await asyncio.sleep(0.01)
+            yield _text_message('{"translation": "שלום"}')
+        finally:
+            live -= 1
+
+    async def drive():
+        translators = []
+        for _ in range(oauth_mod.MAX_CONCURRENCY * 3):
+            tr = build_translator(load_registry().get("anthropic_oauth"), "m")
+            tr._client = query
+            translators.append(tr)
+        return await asyncio.gather(*(t.translate("p") for t in translators))
+
+    results = asyncio.run(drive())
+    assert results == ["שלום"] * (oauth_mod.MAX_CONCURRENCY * 3)
+    assert peak <= oauth_mod.MAX_CONCURRENCY, f"ran {peak} claude processes at once"
+
+
+def test_the_default_model_carries_no_routing_prefix():
+    """The `anthropic_oauth:` prefix is our syntax and is stripped before the call."""
+    model = load_registry().get("anthropic_oauth").default_model
+    assert ":" not in model and "/" not in model
+
+
+def test_a_prefixed_anthropic_oauth_model_routes_and_is_stripped():
+    route = resolve_route(load_registry(), model="anthropic_oauth:claude-opus-5")
+    assert route.provider == "anthropic_oauth"
+    assert route.model == "claude-opus-5"

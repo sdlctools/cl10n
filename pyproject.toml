@@ -78,7 +78,12 @@ nvidia = ["openai"]
 # Mistral ships its own SDK. Note 2.x moved the client to `mistralai.client`:
 # `from mistralai import Mistral` fails.
 mistral = ["mistralai"]
-all-providers = ["cl10n[groq,nvidia,mistral]"]
+# Translate on a Claude Code subscription (CLAUDE_CODE_OAUTH_TOKEN) rather than
+# a metered API key. `claude-agent-sdk` additionally requires the Claude Code
+# CLI to be installed — it spawns it as a subprocess — which pip cannot express
+# and which CI deliberately does not install.
+anthropic_oauth = ["claude-agent-sdk"]
+all-providers = ["cl10n[groq,nvidia,mistral,anthropic_oauth]"]
 
 # Everything the suite needs on top of a normal install. `cl10n[dev]` plus a
 # checkout is the contributor setup; see AGENTS.md → tests.
