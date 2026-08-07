@@ -376,11 +376,41 @@ ______________________________________________________________________
           PROVIDER: ${{ github.event.inputs.provider || '' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ACME_API_KEY: ${{ secrets.ACME_API_KEY }}      # <- add yours here
 ```
 
 Add the repository secret under **Settings → Secrets and variables → Actions**.
 One line in one step is the entire CI change.
+
+### A wired secret is not the same as a provider you want CI to use
+
+`anthropic_oauth` is bound above like every other declared provider — the test
+below requires it — but CI keeps routing to Groq, deliberately.
+
+The reason is **billing, not capability**, and the distinction matters because
+the obvious guess is wrong in both directions:
+
+- Its transport is the Claude Code CLI, which sounds like something a runner
+  would lack. But `claude-agent-sdk` ships a **bundled `claude` binary inside
+  its wheel** on the platforms that have one (the installed
+  `manylinux_2_17_x86_64` wheel carries a ~295 MB executable), so on
+  `ubuntu-latest` a plain `pip install cl10n[all-providers]` already puts a
+  working CLI on disk. Verified, not assumed — check
+  `claude_agent_sdk/_bundled/claude` before believing either story.
+- On a platform with no bundled wheel, the CLI genuinely is absent and every
+  job fails with a terminal CLI-not-found. So the failure mode is real; it is
+  just **platform-dependent**, which is the worst kind to discover in CI.
+
+What actually argues against it: this route spends a Claude Code
+**subscription's** usage limits rather than metered API credit, and an
+unattended run of hundreds of units is what those limits are least suited to.
+Route CI here on purpose or not at all.
+
+The general rule: if your SDK needs anything beyond `pip install` — or ships
+something surprising *inside* the wheel — say so here and in the workflow.
+Either way the failure surfaces inside a step whose secret is correctly
+configured, which is where nobody looks first.
 
 Two properties must survive, and `cl10n/tests/test_workflow.py` asserts them:
 
@@ -422,6 +452,37 @@ order — they are deliberately different from each other:
 | `groq.py` | `groq` | the baseline: per-status exception classes, `response_format` JSON mode, a lazy client |
 | `nvidia.py` | `openai` | an OpenAI-compatible endpoint via `base_url`; **no** `response_format`, because not every NIM model accepts JSON mode |
 | `mistral.py` | `mistralai` | a native SDK that resembles neither: one `SDKError`, `Retry-After` in a non-standard place, httpx errors escaping, and a `content` union |
+| `anthropic_oauth.py` | `claude_agent_sdk` | **the transport is a CLI subprocess, not an HTTP client** — `query()` spawns the Claude Code CLI. No `base_url`, no `api_key=`, no response object. Copy this one for any future non-HTTP provider |
 
 `mistral.py` is the one to copy if your provider has its own SDK; `nvidia.py` if
-it is OpenAI-compatible.
+it is OpenAI-compatible; `anthropic_oauth.py` if it is not an HTTP API at all.
+
+### What the non-HTTP one has to solve that the others don't
+
+Worth reading even if your provider *is* an HTTP API, because each of these is
+a class of problem the first three connectors never meet:
+
+- **The reply is a stream of message objects, not a completion.** `query()` is
+  an async generator; the connector aggregates the `TextBlock`s into one string
+  before returning, which the `Translator` protocol explicitly allows.
+- **Errors arrive on two different paths.** Some are raised (`CLINotFoundError`
+  from the spawn); others are *yielded* into the stream (a rejected
+  `RateLimitEvent`, an `AssistantMessage.error`). The yielded ones are wrapped
+  in an exception so `classify` — and therefore the runner's rate-limit gate —
+  can act on them at all.
+- **The typed exception can be erased in flight.** A failure mid-stream is
+  round-tripped through the SDK's message channel and re-raised as a bare
+  `Exception`, losing its class. The connector matches `type(exc) is Exception`
+  *exactly*: a subclass is an unrecognised error and must stay terminal, or a
+  bug in the connector gets retried three times.
+- **A rate limit has no `Retry-After`.** `RateLimitInfo.resets_at` is a Unix
+  timestamp, converted to seconds-from-now, and `None` when absent so the
+  runner's own backoff carries it.
+- **Concurrency means processes, not sockets.** `-c 8` would be eight Node
+  runtimes, so the ceiling is enforced by a semaphore **inside the connector**
+  — never by teaching the runner a provider's name (§5, spec §7 invariant 2).
+- **A credential that shadows another.** `ANTHROPIC_API_KEY` in the environment
+  makes the CLI bill the metered API instead of the subscription, silently. The
+  connector refuses to run rather than scrubbing it: `options.env` merges over
+  the inherited environment and cannot express a deletion, so a scrub would be
+  a guess about how the CLI reads an empty string.

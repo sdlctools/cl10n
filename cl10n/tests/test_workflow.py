@@ -86,7 +86,8 @@ def test_the_provider_secret_reaches_exactly_one_step(steps):
     holders = [
         step["name"] for step in steps
         if any(k in str(step.get("env", {}))
-               for k in ("GROQ_API_KEY", "NVIDIA_NIM_API_KEY", "MISTRAL_API_KEY"))
+               for k in ("GROQ_API_KEY", "NVIDIA_NIM_API_KEY", "MISTRAL_API_KEY",
+                         "CLAUDE_CODE_OAUTH_TOKEN"))
     ]
     assert holders == ["Execute the queue"]
 
