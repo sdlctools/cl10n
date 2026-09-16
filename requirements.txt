@@ -9,7 +9,7 @@
 # A *consumer* does not use this file. They install from PyPI and take only
 # the provider they route to:
 #
-#     pip install cl10n[groq]
+#     pip install markdown-localization[groq]
 #
 # WHERE THE PINS WENT, AND WHY THEY ARE PINS: the parsing stack
 # (markdown-it-py, mdit-py-plugins, mdformat, mdformat-gfm,

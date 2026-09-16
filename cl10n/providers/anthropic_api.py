@@ -69,7 +69,7 @@ DEFAULT_API_KEY_ENV = "ANTHROPIC_API_KEY"
 def _load_anthropic():
     """Import the `anthropic` SDK lazily so the module is importable without it.
 
-    `anthropic` is an optional extra (`cl10n[anthropic_api]`); importing it at
+    `anthropic` is an optional extra (`markdown-localization[anthropic_api]`); importing it at
     module scope would drag it into every process that imports this module —
     including a Groq-only run that never routes to Anthropic. The registry
     lazy-imports the connector too, so this is belt-and-braces, but it keeps
