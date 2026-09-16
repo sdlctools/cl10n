@@ -311,7 +311,7 @@ jobs:
     # expires with it.
     #
     # PREREQUISITE — a one-time manual registration on pypi.org, which no
-    # workflow can do for itself. The `cl10n` project needs a trusted
+    # workflow can do for itself. The `markdown-localization` project needs a trusted
     # publisher for:
     #
     #     owner       sdlctools
@@ -337,7 +337,7 @@ jobs:
       id-token: write   # mint the OIDC token; nothing else is needed
     environment:
       name: pypi
-      url: https://pypi.org/p/cl10n
+      url: https://pypi.org/p/markdown-localization
     steps:
       - name: Download the distribution built by the release job
         uses: actions/download-artifact@v4

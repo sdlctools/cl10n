@@ -15,12 +15,14 @@ ______________________________________________________________________
 
 ## 1. Install it
 
-`cl10n` is a package on PyPI. There is nothing to copy.
+`cl10n` is on PyPI as the **`markdown-localization`** distribution — that is
+the name you `pip install` and pin. The package you import and the console
+script you run are both still `cl10n`. There is nothing to copy.
 
 ```bash
 cd /path/to/your-project
 python3 -m venv venv
-venv/bin/pip install "cl10n[groq]"
+venv/bin/pip install "markdown-localization[groq]"
 ```
 
 That is the whole installation. It brings the pinned parsing stack, the
@@ -33,23 +35,23 @@ use one:
 
 | Extra | Installs | For |
 | --- | --- | --- |
-| `cl10n[groq]` | `groq` | the default provider |
-| `cl10n[nvidia]` | `openai` | NVIDIA NIM's OpenAI-compatible endpoint (no OpenAI account) |
-| `cl10n[mistral]` | `mistralai` | Mistral |
-| `cl10n[all-providers]` | all three | when you switch between them, or don't know yet |
+| `markdown-localization[groq]` | `groq` | the default provider |
+| `markdown-localization[nvidia]` | `openai` | NVIDIA NIM's OpenAI-compatible endpoint (no OpenAI account) |
+| `markdown-localization[mistral]` | `mistralai` | Mistral |
+| `markdown-localization[all-providers]` | all three | when you switch between them, or don't know yet |
 
 Add it to your project's own dependency file so the install is reproducible —
 `requirements.txt`, `pyproject.toml`, whichever you use:
 
 ```
-cl10n[groq]
+markdown-localization[groq]
 ```
 
-**Pin `cl10n` itself if you pin anything.** The parsing stack inside it is
+**Pin `markdown-localization` itself if you pin anything.** The parsing stack inside it is
 pinned exactly, because every unit hash in your translation memory is taken
 over one specific parser configuration; a `cl10n` release that moved those pins
 would move your hashes and re-translate your corpus at full price. Pinning
-`cl10n==X.Y.Z` makes that a decision you take rather than one you receive.
+`markdown-localization==X.Y.Z` makes that a decision you take rather than one you receive.
 
 When you *do* take a `cl10n` upgrade, the drift detector is the gate — it ships
 in the wheel and needs no checkout:
@@ -307,7 +309,7 @@ Copy `.github/workflows/cl10n.yml` from upstream and change five things:
 | watched paths | `on.push.paths` | your corpus, e.g. `docs/**` |
 | languages | `env.LANGS` | your language list |
 | corpus root | the `plan` / `render` / `status` steps | add `--md-root docs` if not `md` |
-| **install step** | `Install dependencies` | `venv/bin/pip install "cl10n[groq]"` — upstream installs the checkout it lives in (`.[all-providers]`), which is not what your repository holds |
+| **install step** | `Install dependencies` | `venv/bin/pip install "markdown-localization[groq]"` — upstream installs the checkout it lives in (`.[all-providers]`), which is not what your repository holds |
 
 Add the key for the provider your workflow runs as a repository secret under
 **Settings → Secrets and variables → Actions** — `GROQ_API_KEY` for the default,
@@ -433,7 +435,7 @@ render and you keep it. Forget once and nothing is broken.
 
 Setup:
 
-- [ ] `pip install "cl10n[<your provider>]"` into `venv/`, and `venv/bin/cl10n`
+- [ ] `pip install "markdown-localization[<your provider>]"` into `venv/`, and `venv/bin/cl10n`
       runs
 - [ ] `cl10n` added (and pinned) in your own dependency file
 - [ ] `l10n/queue/` and a wide `*creds*` glob in `.gitignore`
@@ -456,14 +458,14 @@ Shipping:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `cl10n: command not found` | the package is not installed in the environment you are calling from, or you vendored it (which provides no console script) | `venv/bin/pip install "cl10n[groq]"`, and call `venv/bin/cl10n`; vendored copies use `venv/bin/python3 -m cl10n.cli` |
+| `cl10n: command not found` | the package is not installed in the environment you are calling from, or you vendored it (which provides no console script) | `venv/bin/pip install "markdown-localization[groq]"`, and call `venv/bin/cl10n`; vendored copies use `venv/bin/python3 -m cl10n.cli` |
 | `ModuleNotFoundError: cl10n` | same, seen from a `python -m` invocation | as above |
 | `ModuleNotFoundError: cl10n.core` / `cl10n.providers` | a vendored copy taken with `cp cl10n/*.py` — a file glob takes no subdirectories | copy the whole `cl10n/` directory — see [section 2](#2-vendoring--the-fallback-not-the-path) |
-| `ModuleNotFoundError: groq` (or `openai`, `mistralai`) | the provider SDK is not installed — only `run` needs it, so `plan`/`render`/`status` look healthy first | install the matching extra: `pip install "cl10n[groq]"` |
+| `ModuleNotFoundError: groq` (or `openai`, `mistralai`) | the provider SDK is not installed — only `run` needs it, so `plan`/`render`/`status` look healthy first | install the matching extra: `pip install "markdown-localization[groq]"` |
 | `no source markdown found under md` | corpus is elsewhere | `--md-root <dir>`, on every command |
 | every document plans as new, every run | manifest missing, or a different `--manifest` per command | pass the same path everywhere; check `l10n/manifest.json` exists |
 | everything shows `[not rendered]` | `--out-dir` differs between `render` and `status` | pass the same flags to both |
 | `<KEY> is not set` | no env var, and no creds file for the **selected** provider, in the working directory | export it, or `run --creds-file <path>`; the name in the message is that provider's `api_key_env` |
 | `unknown provider 'x'` | `--provider` or a `provider:` model prefix names something absent from `providers.toml` | the error lists what is declared |
-| `compat_check` red after a `cl10n` upgrade | the new release moved the parsing stack, so every unit hash moved | pin the previous `cl10n`; do not re-record the baseline to make it pass |
+| `compat_check` red after a `cl10n` upgrade | the new release moved the parsing stack, so every unit hash moved | pin the previous `markdown-localization`; do not re-record the baseline to make it pass |
 | GC deleted another root's translations | two corpus roots with **separate** manifests sharing one memory | share **one** manifest across roots — see [section 8](#8-a-different-corpus-layout) |

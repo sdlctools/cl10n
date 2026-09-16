@@ -23,9 +23,12 @@ md/**.md ──► AST + Merkle hash ──► diff vs. last localized revision
 ## Install
 
 ```bash
-pip install cl10n[groq]          # or cl10n[nvidia], cl10n[mistral]
-pip install cl10n[all-providers] # all three connectors
+pip install markdown-localization[groq]          # or markdown-localization[nvidia], markdown-localization[mistral]
+pip install markdown-localization[all-providers] # all three connectors
 ```
+
+The distribution is named `markdown-localization`; the package you import and
+the command you run are both `cl10n`.
 
 Python 3.11+. Providers are pluggable: `groq` is the default, NVIDIA NIM and
 Mistral ship alongside it, and adding another is one TOML entry plus one

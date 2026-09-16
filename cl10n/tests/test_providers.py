@@ -506,8 +506,8 @@ from cl10n.providers import anthropic_api as anthropic_mod  # noqa: E402
 # The classify matrix uses the REAL `anthropic` exception classes — classifying
 # openai exceptions would prove nothing, since the connector's `classify` does
 # `isinstance(exc, anthropic.RateLimitError)` and an openai exception is not
-# one. `anthropic` is an installed extra (`cl10n[anthropic_api]`, pulled into
-# `cl10n[dev]`), so importing it for taxonomy tests is fine; what is tested is
+# one. `anthropic` is an installed extra (`markdown-localization[anthropic_api]`, pulled into
+# `markdown-localization[dev]`), so importing it for taxonomy tests is fine; what is tested is
 # no network call and no key, exactly like the openai taxing tests for NVIDIA.
 import anthropic  # noqa: E402
 
@@ -584,7 +584,7 @@ def test_anthropic_api_translator_is_constructible_without_an_api_key(monkeypatc
 
     The client is lazy — `_client is None` after construction — so the module
     stays importable without `ANTHROPIC_API_KEY`, which is what keeps the seam
-    stubbable and lets `cl10n[dev]`'s test suite run with no Anthropic key.
+    stubbable and lets `markdown-localization[dev]`'s test suite run with no Anthropic key.
     """
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     r = load_registry()

@@ -14,7 +14,7 @@ parsing stack, and a connector pulls in its provider SDK; making
 from importlib.metadata import PackageNotFoundError, version as _version
 
 try:
-    __version__ = _version("cl10n")
+    __version__ = _version("markdown-localization")
 except PackageNotFoundError:  # running from a source tree, not installed
     __version__ = "0.0.0.dev0"
 
