@@ -397,7 +397,7 @@ the obvious guess is wrong in both directions:
   would lack. But `claude-agent-sdk` ships a **bundled `claude` binary inside
   its wheel** on the platforms that have one (the installed
   `manylinux_2_17_x86_64` wheel carries a ~295 MB executable), so on
-  `ubuntu-latest` a plain `pip install cl10n[all-providers]` already puts a
+  `ubuntu-latest` a plain `pip install markdown-localization[all-providers]` already puts a
   working CLI on disk. Verified, not assumed — check
   `claude_agent_sdk/_bundled/claude` before believing either story.
 - On a platform with no bundled wheel, the CLI genuinely is absent and every

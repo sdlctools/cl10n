@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cl10n"
+name = "markdown-localization"
 version = "0.1.4"
 description = "Continuous localization for Markdown corpora — AST-level change detection, a translation memory, and pluggable LLM providers"
 readme = "README.md"
@@ -67,7 +67,7 @@ dependencies = [
 # Provider SDKs are extras, one per connector in `cl10n/providers/`. They are
 # NOT part of the hashing contract — they never touch a hash — so they are
 # unpinned and upgrade freely. Connectors import them lazily, so installing
-# `cl10n[all-providers]` still means a run only ever loads the SDK it routes
+# `markdown-localization[all-providers]` still means a run only ever loads the SDK it routes
 # to; the extras exist so a user who routes to one vendor does not download
 # three.
 [project.optional-dependencies]
@@ -87,12 +87,12 @@ anthropic_api = ["anthropic"]
 # CLI to be installed — it spawns it as a subprocess — which pip cannot express
 # and which CI deliberately does not install.
 anthropic_oauth = ["claude-agent-sdk"]
-all-providers = ["cl10n[groq,nvidia,mistral,anthropic_api,anthropic_oauth]"]
+all-providers = ["markdown-localization[groq,nvidia,mistral,anthropic_api,anthropic_oauth]"]
 
-# Everything the suite needs on top of a normal install. `cl10n[dev]` plus a
+# Everything the suite needs on top of a normal install. `markdown-localization[dev]` plus a
 # checkout is the contributor setup; see AGENTS.md → tests.
 dev = [
-  "cl10n[all-providers]",
+  "markdown-localization[all-providers]",
   "pytest",
   "pytest-asyncio",
   "jsonschema",

@@ -167,7 +167,7 @@ class StreamError(RuntimeError):
 def _load_sdk():
     """Import `claude_agent_sdk` lazily so this module imports without it.
 
-    The SDK is an optional extra (`cl10n[anthropic_oauth]`), so a Groq run —
+    The SDK is an optional extra (`markdown-localization[anthropic_oauth]`), so a Groq run —
     and the whole test suite — must be able to import this connector with the
     package absent. Every use is funnelled through here for that reason.
     """

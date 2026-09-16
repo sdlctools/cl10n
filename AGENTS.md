@@ -13,8 +13,12 @@ There is n working pipeline, our task is to research this operation.
 
 ## `cl10n` is an installed package, not a directory of scripts
 
-The pipeline is distributed on PyPI as **`cl10n`** and is imported, invoked and
-tested as an installed package. There are no runnable script paths any more:
+The pipeline is distributed on PyPI as **`markdown-localization`** and is
+imported, invoked and tested as an installed package. Only the *distribution*
+carries that name (PyPI would not take `cl10n`): the import package, the
+`python -m cl10n.*` modules and the `cl10n` console script are all still
+`cl10n`, and `cl10n/__init__.py` reads `__version__` from the distribution
+name. There are no runnable script paths any more:
 `venv/bin/python3 cl10n/cli.py …` and `venv/bin/python3 app/tree_diff.py …`
 are gone, deliberately and without shims.
 
@@ -28,7 +32,7 @@ venv/bin/python3 -m cl10n.compat_check       # everything else: python -m
 A consumer installs from PyPI and takes only the provider they route to:
 
 ```bash
-pip install cl10n[groq]        # or cl10n[nvidia], cl10n[mistral], cl10n[all-providers]
+pip install markdown-localization[groq]   # or [nvidia], [mistral], [all-providers]
 cl10n plan --langs he,ru
 ```
 
@@ -413,15 +417,18 @@ pyproject.toml / back-merge / branch-delete sequence as above.
 
    | field | value |
    | --- | --- |
-   | PyPI project | `cl10n` |
+   | PyPI project | `markdown-localization` |
    | Owner | `sdlctools` |
    | Repository | `cl10n` |
    | Workflow | `release.yml` |
    | Environment | `pypi` |
 
    Before the first release the project does not exist yet, so this is added
-   as a **pending publisher** — which also reserves the name. The name was
-   free on PyPI when this was written, but that is a fact with a shelf life:
-   check before the first release, and if it has been taken, changing
-   `[project] name` in `pyproject.toml` is the only edit needed (the import
-   name `cl10n` is independent of the distribution name).
+   as a **pending publisher** — which also reserves the name. The project is
+   `markdown-localization` because PyPI blocked `cl10n`; the repository and
+   the import name stay `cl10n`. Renaming the distribution again is **not**
+   a one-line edit to `[project] name`: the self-referential extras
+   (`all-providers`, `dev`) in `pyproject.toml`, the
+   `importlib.metadata.version(...)` lookup in `cl10n/__init__.py` (which
+   falls back silently to `0.0.0.dev0` when it misses), `release.yml`'s
+   environment URL and every `pip install` line in the docs carry it too.

@@ -62,12 +62,13 @@ ______________________________________________________________________
 
 ## 2. Prerequisites
 
-Install the package. `cl10n` is on PyPI, and the provider SDKs are extras —
+Install the package. It is on PyPI as `markdown-localization` (the import
+name and the command stay `cl10n`), and the provider SDKs are extras —
 take the one you route to:
 
 ```bash
 python3 -m venv venv
-venv/bin/pip install "cl10n[groq]"     # or [nvidia], [mistral], [all-providers]
+venv/bin/pip install "markdown-localization[groq]"     # or [nvidia], [mistral], [all-providers]
 ```
 
 That puts a **`cl10n` console script** in `venv/bin/`, which is what every
@@ -198,7 +199,7 @@ Now plan. `cl10n` is installed, so it is just on your path — there is no
 checkout to point at:
 
 ```bash
-pip install "cl10n[groq]"
+pip install "markdown-localization[groq]"
 
 cl10n plan --langs he
 ```
